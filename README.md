@@ -51,24 +51,8 @@ Full CUDA acceleration ensures ≤ 100 ms frame latency.
 - Kalman filter + GNN/JPDA data association to maintain target IDs.  
 - Occlusion recovery and short‑term disappearance prediction.
 
-_Detailed diagrams and data flows are in `src/` and `doc/BlockDiagram.png`._
 
 ---
-
-## V. Quick Start
-
-```bash
-# 1. Clone the repository
-git clone https://github.com/haowen-EE/Radar-project.git
-cd Radar-project
-
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. Build C++/CUDA modules
-mkdir build && cd build
-cmake ..
-make -j$(nproc)
 
 
 
