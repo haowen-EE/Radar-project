@@ -42,4 +42,33 @@ Using the TI AWR1843 77 GHz FMCW millimeter‑wave radar combined with GPU acce
 1. **Sensor Deployment**  
    - Mount the AWR1843 at campus pathways to cover a ~30 m radius.  
    - Synchronously record contextual ground‑truth data for annotation.  
-2. **Signal Processing**  
+2. **Signal Processing**
+Full CUDA acceleration ensures ≤ 100 ms frame latency.  
+3. **Target Classification**  
+- Rule‑based on speed, RCS intensity, and point‑cloud distribution.  
+- Machine‑learning/deep‑learning models for improved accuracy.  
+4. **Multi‑Target Tracking**  
+- Kalman filter + GNN/JPDA data association to maintain target IDs.  
+- Occlusion recovery and short‑term disappearance prediction.
+
+_Detailed diagrams and data flows are in `src/` and `doc/BlockDiagram.png`._
+
+---
+
+## V. Quick Start
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/haowen-EE/Radar-project.git
+cd Radar-project
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Build C++/CUDA modules
+mkdir build && cd build
+cmake ..
+make -j$(nproc)
+
+
+
