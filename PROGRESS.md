@@ -1,6 +1,6 @@
 # Progress Log
 
-## 2025‑04‑16
+## 2025‑04‑19
 - start github recording 
 - prepare learning material
 - using mmWave Demo Visualizer to connect Radar
@@ -37,3 +37,16 @@ Advanced options
 - User can temporarily pause the mmWave sensor by using the "STOP" button on the plots tab. The sensor can be restarted by using the "START" button. In this case, sensor starts again with the already loaded configuration and no new configuration is sent from the App.
 - It is recommended to always use the online/cloud version of the Visualizer for the mmWave experience with the TI devices but we do understand that users may not always have access to internet connection while trying to evaluate the mmWave devices, especially in the field trial. For such scenarios, there is a link for offline version available under “Help->Download or Clone Visualizer”.
 - If the user desires to save the incoming processed stream from the mmWave device for some offline analysis while its getting plotted, users can use the “Record Start” button in the plots tab. More details can be found in the mmWave Demo Visualizer User's guide. Note: This feature requires the browser version requirement to be as mentioned here: ti-widget-streamsaver
+
+  ## 2025‑04‑20
+- Environmental preparation
+Install and verify Python 3.13.2 on Windows, and confirm the environment through python --version and python -m pip --version; Upgrade pip to the latest version to ensure stable installation of dependencies.
+- Dependent deployment
+install the core library using python -m pip install numpy pyserial pyqtgraph; Import and verify the versions of each library in the interactive environment to ensure there are no errors.
+- Installation and Startup of TI MMWAVE SDK 3
+Download and install mmWave-SDK 3 (03.06.02.00-LTS), and configure the 32-bit compatibility library.
+Test the CLI interface in the command line through mmwave_demo_cli.exe;
+Download and extract mmWave Demo Visualizer separately, run visualizer_server.bat, and verify the radar data in the browser through the graphical interface.
+- Analysis of the AWR1843 configuration file
+Conduct an in-depth analysis of the meanings of parameters such as profileCfg, chirpCfg, frameCfg, CFAR, AoA/Range/Doppler FoV in.cfg;
+Verify the distance/speed resolution and the theoretical values of the maximum unambiguous range and speed to ensure that the configuration meets the application requirements.
