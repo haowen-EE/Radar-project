@@ -53,4 +53,4 @@ Verify the distance/speed resolution and the theoretical values of the maximum u
 
 ## 2025‑05-01
 - Due to the impact of the holiday and the exam week, the project's progress has been put on hold for several weeks. Today's task is to build the platform and the toolchain. Install and open CCS, confirm that the corresponding mmWave SDK and Radar Toolbox have been installed, connect the EVM development board, and learn to use Debug Probe to download the firmware and view the serial port log.
-- 
+
