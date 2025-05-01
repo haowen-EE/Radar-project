@@ -50,3 +50,7 @@ Download and extract mmWave Demo Visualizer separately, run visualizer_server.ba
 - Analysis of the AWR1843 configuration file
 Conduct an in-depth analysis of the meanings of parameters such as profileCfg, chirpCfg, frameCfg, CFAR, AoA/Range/Doppler FoV in.cfg;
 Verify the distance/speed resolution and the theoretical values of the maximum unambiguous range and speed to ensure that the configuration meets the application requirements.
+
+## 2025‑05-01
+- Due to the impact of the holiday and the exam week, the project's progress has been put on hold for several weeks. Today's task is to build the platform and the toolchain. Install and open CCS, confirm that the corresponding mmWave SDK and Radar Toolbox have been installed, connect the EVM development board, and learn to use Debug Probe to download the firmware and view the serial port log.
+- 
