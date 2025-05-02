@@ -55,4 +55,5 @@ Verify the distance/speed resolution and the theoretical values of the maximum u
 - Due to the impact of the holiday and the exam week, the project's progress has been put on hold for several weeks. Today's task is to build the platform and the toolchain. Install and open CCS, confirm that the corresponding mmWave SDK and Radar Toolbox have been installed, connect the EVM development board, and learn to use Debug Probe to download the firmware and view the serial port log.
 - today read some documents on the mmWave SDK. And try the example on the development tools. ![image](https://github.com/user-attachments/assets/9ab40783-45bd-497e-b841-840555809775)
 ## 2025‑05-02
-- By using the mmWave demo visualizer, I got 2 .dat documents. One is a normal record, and the other is recorded when static clutter is eliminated. Which record my walking back and forth in front of the radar.
+- By using the mmWave demo visualizer, I got 2 .dat documents. One is a normal record, and the other is recorded when static clutter is eliminated. Which record my walking back and forth in front of the radar. However,  both VS code and Pycharm can not open them. I need to ask my tutor for help.![image](https://github.com/user-attachments/assets/24109ab2-565d-43ef-9060-e22968d206cc)
+- It's true that 
