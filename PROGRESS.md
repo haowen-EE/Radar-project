@@ -57,3 +57,6 @@ Verify the distance/speed resolution and the theoretical values of the maximum u
 ## 2025‑05-02
 - By using the mmWave demo visualizer, I got 2 .dat documents. One is a normal record, and the other is recorded when static clutter is eliminated. Which record my walking back and forth in front of the radar. However,  both VS code and Pycharm can not open them. I need to ask my tutor for help.![image](https://github.com/user-attachments/assets/24109ab2-565d-43ef-9060-e22968d206cc)
 - It's true that the web of mmWave demo visualizer can do a large mount of work. I still need some other ways to deal with these data, to train the model. I am afraid I need to learn some knowledge about machine learning.
+- The demo visualizer not only produced the .dat document, but also .cfg![image](https://github.com/user-attachments/assets/df8279e7-17ac-46d9-9297-fe63fbb75ef4)
+
+  
