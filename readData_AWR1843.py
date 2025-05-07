@@ -51,7 +51,8 @@ def serialConfig(cfgName):
     with open(cfgName, 'r') as f:
         for line in f:
             cmd = line.strip()
-            CLIport.write((cmd + '
+                        CLIport.write((cmd + '
+').encode()) + '
 ').encode())
             print(f"SENDCFG: {cmd}")
             time.sleep(0.01)
