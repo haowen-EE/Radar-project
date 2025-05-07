@@ -1,359 +1,189 @@
+import os
+import sys
 import serial
 import time
 import numpy as np
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtWidgets,QtCore
+from pyqtgraph.Qt import QtWidgets, QtCore
 
-# Change the configuration file name
-configFileName = 'AWR1843config.cfg'
+# 动态查找桌面下唯一 .cfg 文件
+desktop = os.path.join(os.path.expanduser('~'), 'Desktop')
+cfgs = [f for f in os.listdir(desktop) if f.lower().endswith('.cfg')]
+if len(cfgs) != 1:
+    print(f"请确保桌面上恰好有一个 .cfg 文件，当前找到：{cfgs}")
+    sys.exit(1)
+configFileName = os.path.join(desktop, cfgs[0])
+print("使用配置文件：", configFileName)
 
-CLIport = {}
-Dataport = {}
-byteBuffer = np.zeros(2**15,dtype = 'uint8')
-byteBufferLength = 0;
-
+# 全局变量
+CLIport = None
+Dataport = None
+byteBuffer = np.zeros(2**15, dtype='uint8')
+byteBufferLength = 0
+configParameters = None
 
 # ------------------------------------------------------------------
-
-# Function to configure the serial ports and send the data from
-# the configuration file to the radar
-def serialConfig(configFileName):
-    
-    global CLIport
-    global Dataport
-    # Open the serial ports for the configuration and the data ports
-    
-    # Raspberry pi
-    #CLIport = serial.Serial('/dev/ttyACM0', 115200)
-    #Dataport = serial.Serial('/dev/ttyACM1', 921600)
-    
-    # Windows
-    CLIport = serial.Serial('COM4', 115200)
-    Dataport = serial.Serial('COM3', 921600)
-
-    # Read the configuration file and send it to the board
-
+# 配置串口并发送配置及启动命令
+def serialConfig(cfgName):
+    """
+    自动检测CP2105虚拟串口，分配CLI和Data口，并发送配置和启动命令
+    """
+    global CLIport, Dataport
+    # 列出所有串口及其描述
+    ports = list(serial.tools.list_ports.comports())
+    for p in ports:
+        print(f"Port: {p.device}, Desc: {p.description}")
+    # 筛选包含 CP2105 驱动的端口
+    cp2105_ports = [p for p in ports if 'CP2105' in p.description]
+    if len(cp2105_ports) < 2:
+        raise RuntimeError(f"未找到两个CP2105端口，发现: {[p.device for p in cp2105_ports]}")
+    # 根据描述区分 Standard(命令) 和 Enhanced(数据)
+    std = next((p.device for p in cp2105_ports if 'Standard' in p.description), None)
+    enh = next((p.device for p in cp2105_ports if 'Enhanced' in p.description), None)
+    if not std or not enh:
+        # 如果无法区分，则按自然顺序分配
+        std, enh = cp2105_ports[0].device, cp2105_ports[1].device
+    print(f"Using CLIport={std}, Dataport={enh}")
+    # 打开串口
+    CLIport = serial.Serial(std, 115200)
+    Dataport = serial.Serial(enh, 921600)
+    # 下发配置文件所有行
+    with open(cfgName, 'r') as f:
+        for line in f:
+            cmd = line.strip()
+            CLIport.write((cmd + '
+').encode())
+            print(f"SENDCFG: {cmd}")
+            time.sleep(0.01)
+    # 启动雷达
+    CLIport.write(b'sensorStart
+')
+    print("SEND: sensorStart")
+    time.sleep(0.01)
     return CLIport, Dataport
 
 # ------------------------------------------------------------------
-def update():
-    """
-    从全局 Dataport、configParameters 里读一帧，
-    如果有数据就更新散点 s 的数据。
-    """
+# 解析配置文件，提取必要参数
+def parseConfigFile(cfgName):
+    lines = [l.strip() for l in open(cfgName)]
+    numRxAnt, numTxAnt = 4, 3
+    for ln in lines:
+        parts = ln.split()
+        if parts[0] == 'profileCfg':
+            startFreq = float(parts[2])
+            idleTime = float(parts[3])
+            rampEndTime = float(parts[5])
+            freqSlope = float(parts[8])
+            numAdc = int(parts[10])
+            adcsRound = 1
+            while adcsRound < numAdc:
+                adcsRound <<= 1
+            digOutRate = int(parts[11])
+        elif parts[0] == 'frameCfg':
+            chirpStart = int(parts[1])
+            chirpEnd   = int(parts[2])
+            numLoops   = int(parts[3])
+    numChirps = (chirpEnd - chirpStart + 1) * numLoops
+    params = {}
+    params['numDopplerBins']  = numChirps // numTxAnt
+    params['numRangeBins']    = adcsRound
+    params['rangeIdx2m']      = (3e8 * digOutRate * 1e3) / (2 * freqSlope * 1e12 * adcsRound)
+    params['dopplerRes']      = 3e8 / (2 * startFreq * 1e9 * (idleTime + rampEndTime) * 1e-6 * params['numDopplerBins'] * numTxAnt)
+    return params
+
+# ------------------------------------------------------------------
+# 从串口读取并解析数据包，返回点云信息
+def readAndParseData18xx(Dataport, cfgParams):
     global byteBuffer, byteBufferLength
-    # 你的 readAndParseData18xx 逻辑，返回 dataOK, frameNumber, detObj
-    dataOk = False
-    frameNumber = None
+    # 常量定义
+    MMWDEMO_UART_MSG_DETECTED_POINTS      = 1
+    MMWDEMO_OUTPUT_MSG_RANGE_DOPPLER_HEAT_MAP = 5
+    maxBufferSize = 2**15
+    magicWord = [2,1,4,3,6,5,8,7]
+
+    dataOK = False
+    frameNumber = 0
     detObj = {}
-    if dataOk and len(detObj.get("x", [])) > 0:
-        x = -detObj["x"]
-        y = detObj["y"]
-        s.setData(x, y)
 
+    # 读取串口缓存
+    readBytes = Dataport.read(Dataport.in_waiting or 1)
+    byteVec = np.frombuffer(readBytes, dtype='uint8')
+    count = len(byteVec)
+    if byteBufferLength + count < maxBufferSize:
+        byteBuffer[byteBufferLength: byteBufferLength+count] = byteVec
+        byteBufferLength += count
+
+    # 查找 magic word
+    if byteBufferLength > len(magicWord):
+        locs = np.where(byteBuffer == magicWord[0])[0]
+        startIdx = [i for i in locs if np.all(byteBuffer[i:i+len(magicWord)] == magicWord)]
+        if startIdx:
+            idx0 = startIdx[0]
+            byteBuffer[:byteBufferLength-idx0] = byteBuffer[idx0:byteBufferLength]
+            byteBufferLength -= idx0
+            totalLen = int(np.matmul(byteBuffer[12:16], [1,2**8,2**16,2**24]))
+            if byteBufferLength >= totalLen:
+                dataOK = True
+                idX = 0
+                idX += 20  # skip magic(8)+version(4)+pktLen(4)+platform(4)
+                frameNumber = int(np.matmul(byteBuffer[idX:idX+4], [1,2**8,2**16,2**24])); idX += 4
+                numDet = int(np.matmul(byteBuffer[idX:idX+4], [1,2**8,2**16,2**24])); idX += 4
+                numTLV = int(np.matmul(byteBuffer[idX:idX+4], [1,2**8,2**16,2**24])); idX += 4
+                for _ in range(numTLV):
+                    tlvType = int(np.matmul(byteBuffer[idX:idX+4], [1,2**8,2**16,2**24])); idX += 4
+                    tlvLen  = int(np.matmul(byteBuffer[idX:idX+4], [1,2**8,2**16,2**24])); idX += 4
+                    if tlvType == MMWDEMO_UART_MSG_DETECTED_POINTS:
+                        x = np.zeros(numDet, dtype=np.float32)
+                        y = np.zeros(numDet, dtype=np.float32)
+                        z = np.zeros(numDet, dtype=np.float32)
+                        v = np.zeros(numDet, dtype=np.float32)
+                        for idx in range(numDet):
+                            x[idx] = byteBuffer[idX:idX+4].view(np.float32); idX += 4
+                            y[idx] = byteBuffer[idX:idX+4].view(np.float32); idX += 4
+                            z[idx] = byteBuffer[idX:idX+4].view(np.float32); idX += 4
+                            v[idx] = byteBuffer[idX:idX+4].view(np.float32); idX += 4
+                        detObj = {'numObj':numDet, 'x':x, 'y':y, 'z':z, 'velocity':v}
+                    else:
+                        idX += tlvLen
+                # 清理 buffer
+                byteBuffer[:byteBufferLength-totalLen] = byteBuffer[totalLen:byteBufferLength]
+                byteBufferLength -= totalLen
+
+    return dataOK, frameNumber, detObj
+
+# ------------------------------------------------------------------
+# 定时调用：更新并绘制
+def update():
+    dataOk, fnum, detObj = readAndParseData18xx(Dataport, configParameters)
+    if dataOk and 'x' in detObj and len(detObj['x'])>0:
+        s.setData(-detObj['x'], detObj['y'])
+    return dataOk
+
+# ------------------------- 主程序 -------------------------
 if __name__ == '__main__':
-    # 1. 打开串口 & 解析配置
+    # 初始化
     CLIport, Dataport = serialConfig(configFileName)
-    configParameters = parseConfigFile(configFileName)
+    configParameters    = parseConfigFile(configFileName)
 
-    # 2. 创建 QApplication 和窗口、画布
+    # GUI 界面
     app = QtWidgets.QApplication([])
     pg.setConfigOption('background', 'w')
     win = pg.GraphicsLayoutWidget(title="2D scatter plot")
     p = win.addPlot()
     p.setXRange(-0.5, 0.5)
     p.setYRange(0, 1.5)
-    p.setLabel('left', text='Y position (m)')
+    p.setLabel('left',   text='Y position (m)')
     p.setLabel('bottom', text='X position (m)')
-    # 这里存到全局 s 中，update() 里才能访问
-    global s
     s = p.plot([], [], pen=None, symbol='o')
     win.show()
 
-    # 3. 用 QTimer 周期调用 update（50ms 刷新一次 → 20Hz）
+    # 定时更新
     timer = QtCore.QTimer()
     timer.timeout.connect(update)
     timer.start(50)
-
-    # 4. 进入 Qt 事件循环
     app.exec_()
 
-    # 5. 退出时关闭串口
-    CLIport.write(('sensorStop\n').encode())
+    # 退出清理
+    CLIport.write(b'sensorStop\n')
     CLIport.close()
     Dataport.close()
-# Function to parse the data inside the configuration file
-def parseConfigFile(configFileName):
-    configParameters = {} # Initialize an empty dictionary to store the configuration parameters
-    
-    # Read the configuration file and send it to the board
-    config = [line.rstrip('\r\n') for line in open(configFileName)]
-    for i in config:
-        
-        # Split the line
-        splitWords = i.split(" ")
-        
-        # Hard code the number of antennas, change if other configuration is used
-        numRxAnt = 4
-        numTxAnt = 3
-        
-        # Get the information about the profile configuration
-        if "profileCfg" in splitWords[0]:
-            startFreq = int(float(splitWords[2]))
-            idleTime = int(splitWords[3])
-            rampEndTime = float(splitWords[5])
-            freqSlopeConst = float(splitWords[8])
-            numAdcSamples = int(splitWords[10])
-            numAdcSamplesRoundTo2 = 1;
-            
-            while numAdcSamples > numAdcSamplesRoundTo2:
-                numAdcSamplesRoundTo2 = numAdcSamplesRoundTo2 * 2;
-                
-            digOutSampleRate = int(splitWords[11]);
-            
-        # Get the information about the frame configuration    
-        elif "frameCfg" in splitWords[0]:
-            
-            chirpStartIdx = int(splitWords[1]);
-            chirpEndIdx = int(splitWords[2]);
-            numLoops = int(splitWords[3]);
-            numFrames = int(splitWords[4]);
-            framePeriodicity = float(splitWords[5]);
-
-            
-    # Combine the read data to obtain the configuration parameters           
-    numChirpsPerFrame = (chirpEndIdx - chirpStartIdx + 1) * numLoops
-    configParameters["numDopplerBins"] = numChirpsPerFrame / numTxAnt
-    configParameters["numRangeBins"] = numAdcSamplesRoundTo2
-    configParameters["rangeResolutionMeters"] = (3e8 * digOutSampleRate * 1e3) / (2 * freqSlopeConst * 1e12 * numAdcSamples)
-    configParameters["rangeIdxToMeters"] = (3e8 * digOutSampleRate * 1e3) / (2 * freqSlopeConst * 1e12 * configParameters["numRangeBins"])
-    configParameters["dopplerResolutionMps"] = 3e8 / (2 * startFreq * 1e9 * (idleTime + rampEndTime) * 1e-6 * configParameters["numDopplerBins"] * numTxAnt)
-    configParameters["maxRange"] = (300 * 0.9 * digOutSampleRate)/(2 * freqSlopeConst * 1e3)
-    configParameters["maxVelocity"] = 3e8 / (4 * startFreq * 1e9 * (idleTime + rampEndTime) * 1e-6 * numTxAnt)
-    
-    return configParameters
-   
-# ------------------------------------------------------------------
-
-# Funtion to read and parse the incoming data
-def readAndParseData18xx(Dataport, configParameters):
-    global byteBuffer, byteBufferLength
-    
-    # Constants
-    OBJ_STRUCT_SIZE_BYTES = 12;
-    BYTE_VEC_ACC_MAX_SIZE = 2**15;
-    MMWDEMO_UART_MSG_DETECTED_POINTS = 1;
-    MMWDEMO_UART_MSG_RANGE_PROFILE   = 2;
-    maxBufferSize = 2**15;
-    tlvHeaderLengthInBytes = 8;
-    pointLengthInBytes = 16;
-    magicWord = [2, 1, 4, 3, 6, 5, 8, 7]
-    
-    # Initialize variables
-    magicOK = 0 # Checks if magic number has been read
-    dataOK = 0 # Checks if the data has been read correctly
-    frameNumber = 0
-    detObj = {}
-    
-    readBuffer = Dataport.read(Dataport.in_waiting)
-    byteVec = np.frombuffer(readBuffer, dtype = 'uint8')
-    byteCount = len(byteVec)
-    
-    # Check that the buffer is not full, and then add the data to the buffer
-    if (byteBufferLength + byteCount) < maxBufferSize:
-        byteBuffer[byteBufferLength:byteBufferLength + byteCount] = byteVec[:byteCount]
-        byteBufferLength = byteBufferLength + byteCount
-        
-    # Check that the buffer has some data
-    if byteBufferLength > 16:
-        
-        # Check for all possible locations of the magic word
-        possibleLocs = np.where(byteBuffer == magicWord[0])[0]
-
-        # Confirm that is the beginning of the magic word and store the index in startIdx
-        startIdx = []
-        for loc in possibleLocs:
-            check = byteBuffer[loc:loc+8]
-            if np.all(check == magicWord):
-                startIdx.append(loc)
-               
-        # Check that startIdx is not empty
-        if startIdx:
-            
-            # Remove the data before the first start index
-            if startIdx[0] > 0 and startIdx[0] < byteBufferLength:
-                byteBuffer[:byteBufferLength-startIdx[0]] = byteBuffer[startIdx[0]:byteBufferLength]
-                byteBuffer[byteBufferLength-startIdx[0]:] = np.zeros(len(byteBuffer[byteBufferLength-startIdx[0]:]),dtype = 'uint8')
-                byteBufferLength = byteBufferLength - startIdx[0]
-                
-            # Check that there have no errors with the byte buffer length
-            if byteBufferLength < 0:
-                byteBufferLength = 0
-                
-            # word array to convert 4 bytes to a 32 bit number
-            word = [1, 2**8, 2**16, 2**24]
-            
-            # Read the total packet length
-            totalPacketLen = np.matmul(byteBuffer[12:12+4],word)
-            
-            # Check that all the packet has been read
-            if (byteBufferLength >= totalPacketLen) and (byteBufferLength != 0):
-                magicOK = 1
-    
-    # If magicOK is equal to 1 then process the message
-    if magicOK:
-        # word array to convert 4 bytes to a 32 bit number
-        word = [1, 2**8, 2**16, 2**24]
-        
-        # Initialize the pointer index
-        idX = 0
-        
-        # Read the header
-        magicNumber = byteBuffer[idX:idX+8]
-        idX += 8
-        version = format(np.matmul(byteBuffer[idX:idX+4],word),'x')
-        idX += 4
-        totalPacketLen = np.matmul(byteBuffer[idX:idX+4],word)
-        idX += 4
-        platform = format(np.matmul(byteBuffer[idX:idX+4],word),'x')
-        idX += 4
-        frameNumber = np.matmul(byteBuffer[idX:idX+4],word)
-        idX += 4
-        timeCpuCycles = np.matmul(byteBuffer[idX:idX+4],word)
-        idX += 4
-        numDetectedObj = np.matmul(byteBuffer[idX:idX+4],word)
-        idX += 4
-        numTLVs = np.matmul(byteBuffer[idX:idX+4],word)
-        idX += 4
-        subFrameNumber = np.matmul(byteBuffer[idX:idX+4],word)
-        idX += 4
-
-        # Read the TLV messages
-        for tlvIdx in range(numTLVs):
-            
-            # word array to convert 4 bytes to a 32 bit number
-            word = [1, 2**8, 2**16, 2**24]
-
-            # Check the header of the TLV message
-            tlv_type = np.matmul(byteBuffer[idX:idX+4],word)
-            idX += 4
-            tlv_length = np.matmul(byteBuffer[idX:idX+4],word)
-            idX += 4
-
-            # Read the data depending on the TLV message
-            if tlv_type == MMWDEMO_UART_MSG_DETECTED_POINTS:
-
-                # Initialize the arrays
-                x = np.zeros(numDetectedObj,dtype=np.float32)
-                y = np.zeros(numDetectedObj,dtype=np.float32)
-                z = np.zeros(numDetectedObj,dtype=np.float32)
-                velocity = np.zeros(numDetectedObj,dtype=np.float32)
-                
-                for objectNum in range(numDetectedObj):
-                    
-                    # Read the data for each object
-                    x[objectNum] = byteBuffer[idX:idX + 4].view(dtype=np.float32)
-                    idX += 4
-                    y[objectNum] = byteBuffer[idX:idX + 4].view(dtype=np.float32)
-                    idX += 4
-                    z[objectNum] = byteBuffer[idX:idX + 4].view(dtype=np.float32)
-                    idX += 4
-                    velocity[objectNum] = byteBuffer[idX:idX + 4].view(dtype=np.float32)
-                    idX += 4
-                
-                # Store the data in the detObj dictionary
-                detObj = {"numObj": numDetectedObj, "x": x, "y": y, "z": z, "velocity":velocity}
-                dataOK = 1
-                
- 
-        # Remove already processed data
-        if idX > 0 and byteBufferLength>idX:
-            shiftSize = totalPacketLen
-            
-                
-            byteBuffer[:byteBufferLength - shiftSize] = byteBuffer[shiftSize:byteBufferLength]
-            byteBuffer[byteBufferLength - shiftSize:] = np.zeros(len(byteBuffer[byteBufferLength - shiftSize:]),dtype = 'uint8')
-            byteBufferLength = byteBufferLength - shiftSize
-            
-            # Check that there are no errors with the buffer length
-            if byteBufferLength < 0:
-                byteBufferLength = 0         
-
-    return dataOK, frameNumber, detObj
-
-# ------------------------------------------------------------------
-
-# Funtion to update the data and display in the plot
-def update():
-     
-    dataOk = 0
-    global detObj
-    x = []
-    y = []
-      
-    # Read and parse the received data
-    dataOk, frameNumber, detObj = readAndParseData18xx(Dataport, configParameters)
-    
-    if dataOk and len(detObj["x"])>0:
-        #print(detObj)
-        x = -detObj["x"]
-        y = detObj["y"]
-        
-        s.setData(x,y)
-        QtWidgets.QApplication.processEvents()
-    
-    return dataOk
-
-
-# -------------------------    MAIN   -----------------------------------------  
-
-# Configurate the serial port
-CLIport, Dataport = serialConfig(configFileName)
-
-# Get the configuration parameters from the configuration file
-configParameters = parseConfigFile(configFileName)
-
-# START QtAPPfor the plot
-app = QtWidgets.QApplication([])
-
-# Set the plot 
-pg.setConfigOption('background','w')
-win = pg.GraphicsLayoutWidget(title="2D scatter plot")
-p = win.addPlot()
-p.setXRange(-0.5,0.5)
-p.setYRange(0,1.5)
-p.setLabel('left',text = 'Y position (m)')
-p.setLabel('bottom', text= 'X position (m)')
-s = p.plot([],[],pen=None,symbol='o')
-win.show()
-   
-# Main loop 
-detObj = {}  
-frameData = {}    
-currentIndex = 0
-while True:
-    try:
-        # Update the data and check if the data is okay
-        dataOk = update()
-        
-        if dataOk:
-            # Store the current frame into frameData
-            frameData[currentIndex] = detObj
-            currentIndex += 1
-        
-        time.sleep(0.05) # Sampling frequency of 30 Hz
-        
-    # Stop the program and close everything if Ctrl + c is pressed
-    except KeyboardInterrupt:
-        CLIport.write(('sensorStop\n').encode())
-        CLIport.close()
-        Dataport.close()
-        win.close()
-        break
-        
-    
-
-
-
-
-
