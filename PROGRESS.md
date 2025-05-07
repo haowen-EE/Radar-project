@@ -63,3 +63,5 @@ Verify the distance/speed resolution and the theoretical values of the maximum u
 ## 2025‑05-07
 - <img width="1280" alt="微信图片_20250507154627" src="https://github.com/user-attachments/assets/92bca619-75cc-42ed-9654-72712a7b6ec0" />
 I did 21 times update of my coding on python, However it can't do nothing. I use the cfg which got from mmWave demo visualizer. And do some changes of the details. Just don't work. Just no outputs. I was really tired to change it again and again. Later I may be use Matlab to deal with these fking shit. Why everytime I using the fk python, it let me download something. Everytime!!!!! I don't even know what are their functions.
+![image](https://github.com/user-attachments/assets/a09db161-4921-458a-8292-1bea288a1e58)
+By using demo visulizer, When there are no moving objects, the relative power will remain at around 40dB. Once a moving object appears (take the swing of an arm as an example), the relative power will immediately rise to 60-80dB depending on the speed and the size of the distance. This is achieved through the algorithm of eliminating static clutter. 
