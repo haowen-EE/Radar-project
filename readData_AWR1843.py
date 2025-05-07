@@ -1,145 +1,192 @@
+# Updated readData_AWR1843.py with debug prints
+
 import os
-import sys
-import serial
-import serial.tools.list_ports
+import glob
 import time
 import numpy as np
+import serial
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtWidgets, QtCore
-import pyqtgraph.opengl as gl
+from pyqtgraph.Qt import QtCore, QtWidgets
+from pyqtgraph.opengl import GLViewWidget, GLScatterPlotItem
 
-# 自动加载桌面唯一 .cfg 文件
+# ─── 配置文件自动发现 ─────────────────────────────
 desktop = os.path.join(os.path.expanduser('~'), 'Desktop')
-cfgs = [f for f in os.listdir(desktop) if f.lower().endswith('.cfg')]
+cfgs = glob.glob(os.path.join(desktop, '*.cfg'))
 if len(cfgs) != 1:
-    print('请确保桌面上恰好有一个 .cfg 文件，目前:', cfgs)
-    sys.exit(1)
-configFileName = os.path.join(desktop, cfgs[0])
-print('使用配置文件:', configFileName)
+    print("请确保桌面上恰好有一个 .cfg 文件，当前找到：", cfgs)
+    raise SystemExit(1)
+configFileName = cfgs[0]
+print("使用配置文件：", configFileName)
 
-# 全局变量
+# ─── 全局变量 ───────────────────────────────────
 CLIport = None
 Dataport = None
-byteBuffer = np.zeros(2**15, dtype='uint8')
+byteBuffer = np.zeros(2**15, dtype=np.uint8)
 byteBufferLength = 0
-configParams = None
 
-# ------------------------------------------------------------------
-# 串口配置并下发
-```python
+# ─── 串口配置 & 下发配置文件 ─────────────────────
 def serialConfig(cfgName):
     global CLIport, Dataport
-    # 手动指定端口
-    CLIport = serial.Serial('COM3', 115200)
-    Dataport = serial.Serial('COM4', 921600)
+    # TODO: 根据实际设备管理器查看的端口号修改
+    CLIport  = serial.Serial('COM4', 115200)
+    Dataport = serial.Serial('COM3', 921600)
+
     with open(cfgName, 'r') as f:
         for line in f:
             cmd = line.strip()
+            print("SENDCFG:", cmd)
             CLIport.write((cmd + '\n').encode())
-            print('SENDCFG:', cmd)
             time.sleep(0.01)
+
+    print("SEND: sensorStart")
     CLIport.write(b'sensorStart\n')
-    print('SEND: sensorStart')
     time.sleep(0.01)
     return CLIport, Dataport
-```
-# ------------------------------------------------------------------
-# 配置解析
-def parseConfigFile(cfgName):
-    lines = [l.strip() for l in open(cfgName)]
-    numRxAnt, numTxAnt = 4, 3
-    for ln in lines:
-        parts = ln.split()
-        if parts[0] == 'profileCfg':
-            startFreq = float(parts[2]); idleTime = float(parts[3]); rampEndTime = float(parts[5])
-            freqSlope = float(parts[8]); numAdc = int(parts[10])
-            adcsRound = 1
-            while adcsRound < numAdc:
-                adcsRound <<= 1
-            digRate = int(parts[11])
-        elif parts[0] == 'frameCfg':
-            chirpStart = int(parts[1]); chirpEnd = int(parts[2]); numLoops = int(parts[3])
-    numChirps = (chirpEnd - chirpStart + 1) * numLoops
-    return {
-        'numDopplerBins': numChirps // numTxAnt,
-        'numRangeBins': adcsRound,
-        'rangeIdx2m': (3e8 * digRate * 1e3) / (2 * freqSlope * 1e12 * adcsRound),
-        'dopplerRes': 3e8 / (2 * startFreq * 1e9 * (idleTime + rampEndTime) * 1e-6 * (numChirps // numTxAnt) * numTxAnt)
-    }
 
-# ------------------------------------------------------------------
-# 数据解析 (点 + Range-Doppler)
-def readAndParseData18xx(Dataport, cfg):
-    MMWDET, MMWRD = 1, 5
-    maxSize, magic = 2**15, [2,1,4,3,6,5,8,7]
-    dataOK, detObj, rdMat = False, {}, None
-    sz = Dataport.in_waiting
-    if sz:
-        raw = Dataport.read(sz)
-        buf = np.frombuffer(raw, dtype='uint8')
-        if byteBufferLength + len(buf) < maxSize:
-            byteBuffer[byteBufferLength:byteBufferLength+len(buf)] = buf
-            byteBufferLength += len(buf)
-    if byteBufferLength > len(magic):
-        idxs = np.where(byteBuffer == magic[0])[0]
-        starts = [i for i in idxs if np.all(byteBuffer[i:i+len(magic)]==magic)]
+# ─── 解析配置文件 ────────────────────────────────
+def parseConfigFile(cfgName):
+    configParameters = {}
+    lines = [line.strip() for line in open(cfgName)]
+    for line in lines:
+        parts = line.split()
+        if parts[0] == 'profileCfg':
+            startFreq = int(float(parts[2]))
+            idleTime = int(parts[3])
+            rampEndTime = float(parts[5])
+            freqSlopeConst = float(parts[8])
+            numAdcSamples = int(parts[10])
+            numAdcSamplesRoundTo2 = 1
+            while numAdcSamples > numAdcSamplesRoundTo2:
+                numAdcSamplesRoundTo2 *= 2
+            digOutSampleRate = int(parts[11])
+        elif parts[0] == 'frameCfg':
+            chirpStartIdx = int(parts[1])
+            chirpEndIdx = int(parts[2])
+            numLoops = int(parts[3])
+            numFrames = int(parts[4])
+            framePeriodicity = float(parts[5])
+
+    numChirpsPerFrame = (chirpEndIdx - chirpStartIdx + 1) * numLoops
+    configParameters["numDopplerBins"] = int(numChirpsPerFrame / 3)  # numTxAnt=3
+    configParameters["numRangeBins"]   = numAdcSamplesRoundTo2
+    configParameters["rangeIdxToMeters"] = (3e8 * digOutSampleRate * 1e3) / (
+        2 * freqSlopeConst * 1e12 * numAdcSamplesRoundTo2)
+    configParameters["dopplerResolutionMps"] = 3e8 / (
+        2 * startFreq * 1e9 * (idleTime + rampEndTime) * 1e-6 *
+        configParameters["numDopplerBins"] * 3)
+    return configParameters
+
+# ─── 读取并解析 TLV 数据 ─────────────────────────
+def readAndParseData18xx(port, configParameters):
+    global byteBuffer, byteBufferLength
+
+    # Debug: show how many bytes are waiting
+    waiting = port.in_waiting
+    print(f"DEBUG: {waiting} bytes waiting on Dataport")
+
+    MMWDEMO_UART_MSG_DETECTED_POINTS        = 1
+    MMWDEMO_OUTPUT_MSG_RANGE_DOPPLER_HEAT_MAP = 5
+    magicWord = [2,1,4,3,6,5,8,7]
+    maxBufferSize = 2**15
+
+    dataOK = False
+    frameNumber = 0
+    detObj = {}
+    rdMat = None
+
+    # 读取串口
+    n = port.in_waiting or 1
+    buff = port.read(n)
+    vec = np.frombuffer(buff, dtype=np.uint8)
+    cnt = len(vec)
+
+    if byteBufferLength + cnt < maxBufferSize:
+        byteBuffer[byteBufferLength:byteBufferLength+cnt] = vec
+        byteBufferLength += cnt
+
+    if byteBufferLength > len(magicWord):
+        idxs = np.where(byteBuffer == magicWord[0])[0]
+        starts = [i for i in idxs if np.all(byteBuffer[i:i+8] == magicWord)]
         if starts:
-            s0 = starts[0]
-            byteBuffer[:byteBufferLength-s0] = byteBuffer[s0:byteBufferLength]
-            byteBufferLength -= s0
-            totalLen = int(np.matmul(byteBuffer[12:16],[1,2**8,2**16,2**24]))
+            offset = starts[0]
+            byteBuffer[:byteBufferLength-offset] = byteBuffer[offset:byteBufferLength]
+            byteBufferLength -= offset
+            totalLen = int(np.dot(byteBuffer[12:16], [1,2**8,2**16,2**24]))
             if byteBufferLength >= totalLen:
                 dataOK = True
-                i = 0; i += 20
-                frameNum = int(np.matmul(byteBuffer[i:i+4],[1,2**8,2**16,2**24])); i += 4
-                numDet = int(np.matmul(byteBuffer[i:i+4],[1,2**8,2**16,2**24])); i += 4
-                numTLV= int(np.matmul(byteBuffer[i:i+4],[1,2**8,2**16,2**24])); i += 4
-                for _ in range(numTLV):
-                    tlvType = int(np.matmul(byteBuffer[i:i+4],[1,2**8,2**16,2**24])); i += 4
-                    tlvLen  = int(np.matmul(byteBuffer[i:i+4],[1,2**8,2**16,2**24])); i += 4
-                    if tlvType == MMWDET:
-                        x=np.zeros(numDet); y=np.zeros(numDet); z=np.zeros(numDet)
-                        for k in range(numDet):
-                            x[k] = byteBuffer[i:i+4].view('float32'); i += 4
-                            y[k] = byteBuffer[i:i+4].view('float32'); i += 4
-                            z[k] = byteBuffer[i:i+4].view('float32'); i += 4
-                        detObj = {'numObj':numDet,'x':x,'y':y,'z':z}
-                    elif tlvType == MMWRD:
-                        nr, nd = cfg['numRangeBins'], cfg['numDopplerBins']
-                        cnt = 2*nr*nd
-                        pld = byteBuffer[i:i+cnt]; i += cnt
-                        rd = pld.view('int16').reshape((nd,nr),order='F')
-                        rd = np.vstack((rd[nd//2:], rd[:nd//2]))
-                        rdMat = rd
+                print(f"DEBUG: got full packet, length={totalLen}")
+
+                i = 0
+                i += 8+4+4+4  # skip header
+                frameNumber = int(np.dot(byteBuffer[i:i+4], [1,2**8,2**16,2**24]))
+                i += 4
+                numObj = int(np.dot(byteBuffer[i:i+4], [1,2**8,2**16,2**24])); i+=4
+                numTLVs = int(np.dot(byteBuffer[i:i+4], [1,2**8,2**16,2**24])); i+=4
+
+                for _ in range(numTLVs):
+                    tlv_type = int(np.dot(byteBuffer[i:i+4], [1,2**8,2**16,2**24])); i+=4
+                    tlv_len  = int(np.dot(byteBuffer[i:i+4], [1,2**8,2**16,2**24])); i+=4
+
+                    if tlv_type == MMWDEMO_UART_MSG_DETECTED_POINTS:
+                        print(f"DEBUG: TLV type 1 — detected points: {numObj}")
+                        xs = np.zeros(numObj, dtype=np.float32)
+                        ys = np.zeros(numObj, dtype=np.float32)
+                        zs = np.zeros(numObj, dtype=np.float32)
+                        for o in range(numObj):
+                            xs[o] = byteBuffer[i:i+4].view('float32'); i+=4
+                            ys[o] = byteBuffer[i:i+4].view('float32'); i+=4
+                            zs[o] = byteBuffer[i:i+4].view('float32'); i+=4
+                        detObj = {'numObj': numObj, 'x': xs, 'y': ys, 'z': zs}
+
+                    elif tlv_type == MMWDEMO_OUTPUT_MSG_RANGE_DOPPLER_HEAT_MAP:
+                        print("DEBUG: TLV type 5 — rangeDoppler matrix received")
+                        rb = configParameters["numRangeBins"]
+                        db = configParameters["numDopplerBins"]
+                        numBytes = 2*rb*db
+                        payload = byteBuffer[i:i+numBytes]; i += numBytes
+                        mat = payload.view(np.int16).reshape((db, rb), order='F')
+                        half = db//2
+                        rdMat = np.vstack((mat[half:], mat[:half]))
+
                     else:
-                        i += tlvLen
+                        i += tlv_len
+
                 byteBuffer[:byteBufferLength-totalLen] = byteBuffer[totalLen:byteBufferLength]
                 byteBufferLength -= totalLen
-    return dataOK, detObj, rdMat
 
-# 更新绘制
+    return dataOK, frameNumber, detObj, rdMat
+
+# ─── 定时更新函数 ─────────────────────────────────
 def update():
-    ok, dobj, rmat = readAndParseData18xx(Dataport, configParams)
-    if ok:
-        if 'x' in dobj:
-            pts = np.vstack((dobj['x'], dobj['y'], dobj['z'])).T
-            scatter3d.setData(pos=pts, size=5, color=(1,1,1,1))
-        if rmat is not None:
-            img.setImage(rmat, autoLevels=False)
+    global scatter3d, rd_img
+    dataOk, frm, detObj, rdMat = readAndParseData18xx(Dataport, configParameters)
+    print(f"DEBUG: update() returned dataOk={dataOk}")
+    if dataOk:
+        if detObj.get('numObj',0)>0:
+            print("DEBUG: updating 3D scatter with", detObj['numObj'], "points")
+            pts = np.vstack((detObj['x'], detObj['y'], detObj['z'])).T
+            scatter3d.setData(pos=pts, size=0.05, color=(1,0,0,1))
+        if rdMat is not None:
+            print("DEBUG: updating RD plot, shape=", rdMat.shape)
+            rd_img.setImage(rdMat, autoLevels=True)
 
-# 主程序入口
+# ─── 主入口 ─────────────────────────────────────
 if __name__ == '__main__':
-    CLIport, Dataport = serialConfig(configFileName)
-    configParams = parseConfigFile(configFileName)
+    CLIport, Dataport      = serialConfig(configFileName)
+    configParameters       = parseConfigFile(configFileName)
+
     app = QtWidgets.QApplication([])
-    # 3D 散点图
-    w3d = gl.GLViewWidget(); w3d.setWindowTitle('3D Scatter Plot'); w3d.setCameraPosition(distance=2)
-    scatter3d = gl.GLScatterPlotItem(); w3d.addItem(scatter3d); w3d.show()
-    # Range-Doppler 热图
-    win2 = pg.GraphicsLayoutWidget(title='Range-Doppler Plot')
-    p2 = win2.addPlot(); img = pg.ImageItem(); p2.addItem(img); win2.show()
-    # 定时更新
-    tmr = QtCore.QTimer(); tmr.timeout.connect(update); tmr.start(50)
+
+    # 3D Scatter Plot
+    view3d = GLViewWidget(); view3d.setWindowTitle('3D Scatter'); view3d.opts['distance']=3
+    scatter3d = GLScatterPlotItem(); view3d.addItem(scatter3d); view3d.show()
+
+    # Range-Doppler Plot
+    rd_win = pg.GraphicsLayoutWidget(title='Range-Doppler')
+    rd_plot= rd_win.addPlot(); rd_plot.setLabel('left','Doppler'); rd_plot.setLabel('bottom','Range')
+    rd_img = pg.ImageItem(); rd_plot.addItem(rd_img); rd_win.show()
+
+    timer = QtCore.QTimer(); timer.timeout.connect(update); timer.start(50)
     app.exec_()
-    # 退出清理
+
     CLIport.write(b'sensorStop\n'); CLIport.close(); Dataport.close()
