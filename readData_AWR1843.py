@@ -1,18 +1,23 @@
 import os
 import sys
 import serial
+import serial.tools.list_ports
 import time
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets, QtCore
 
-# 动态查找桌面下唯一 .cfg 文件
+# 调试：打印当前目录及可用 .cfg 文件
+print("当前工作目录：", os.getcwd())
+print("可用配置文件：", [f for f in os.listdir(os.getcwd()) if f.endswith('.cfg')])
+
+# 自动加载桌面唯一 .cfg 文件
 desktop = os.path.join(os.path.expanduser('~'), 'Desktop')
-cfgs = [f for f in os.listdir(desktop) if f.lower().endswith('.cfg')]
-if len(cfgs) != 1:
-    print(f"请确保桌面上恰好有一个 .cfg 文件，当前找到：{cfgs}")
+cfg_list = [f for f in os.listdir(desktop) if f.lower().endswith('.cfg')]
+if len(cfg_list) != 1:
+    print("请确保桌面上恰好有一个 .cfg 文件，当前找到：", cfg_list)
     sys.exit(1)
-configFileName = os.path.join(desktop, cfgs[0])
+configFileName = os.path.join(desktop, cfg_list[0])
 print("使用配置文件：", configFileName)
 
 # 全局变量
@@ -23,38 +28,37 @@ byteBufferLength = 0
 configParameters = None
 
 # ------------------------------------------------------------------
-# 配置串口并发送配置及启动命令
+# 自动检测 CP2105 串口并发送配置、启动命令
 def serialConfig(cfgName):
-    """
-    自动检测CP2105虚拟串口，分配CLI和Data口，并发送配置和启动命令
-    """
     global CLIport, Dataport
-    # 列出所有串口及其描述
+    # 自动检测 CP2105 虚拟串口
     ports = list(serial.tools.list_ports.comports())
     for p in ports:
         print(f"Port: {p.device}, Desc: {p.description}")
-    # 筛选包含 CP2105 驱动的端口
-    cp2105_ports = [p for p in ports if 'CP2105' in p.description]
-    if len(cp2105_ports) < 2:
-        raise RuntimeError(f"未找到两个CP2105端口，发现: {[p.device for p in cp2105_ports]}")
-    # 根据描述区分 Standard(命令) 和 Enhanced(数据)
-    std = next((p.device for p in cp2105_ports if 'Standard' in p.description), None)
-    enh = next((p.device for p in cp2105_ports if 'Enhanced' in p.description), None)
-    if not std or not enh:
-        # 如果无法区分，则按自然顺序分配
-        std, enh = cp2105_ports[0].device, cp2105_ports[1].device
+    cp_ports = [p for p in ports if 'CP2105' in p.description]
+    if len(cp_ports) < 2:
+        raise RuntimeError(f"未找到两个 CP2105 端口，发现: {[p.device for p in cp_ports]}")
+    # 区分 Standard/Enhanced
+    std = next((p.device for p in cp_ports if 'Standard' in p.description), cp_ports[0].device)
+    enh = next((p.device for p in cp_ports if 'Enhanced' in p.description), cp_ports[1].device)
     print(f"Using CLIport={std}, Dataport={enh}")
-    # 打开串口
-    CLIport = serial.Serial(std, 115200)
+    # 打开 CLIport，如果失败则尝试交换端口
+    try:
+        CLIport = serial.Serial(std, 115200)
+    except serial.SerialException as e:
+        print(f"无法打开CLI端口 {std}: {e}，尝试交换端口")
+        std, enh = enh, std
+        print(f"交换后 Using CLIport={std}, Dataport={enh}")
+        CLIport = serial.Serial(std, 115200)
+    # 打开 Dataport
     Dataport = serial.Serial(enh, 921600)
-    # 下发配置文件所有行
+    # 下发配置
     with open(cfgName, 'r') as f:
         for line in f:
             cmd = line.strip()
-                        CLIport.write((cmd + '
-').encode()) + '
+            CLIport.write((cmd + '
 ').encode())
-            print(f"SENDCFG: {cmd}")
+            print("SENDCFG:", cmd)
             time.sleep(0.01)
     # 启动雷达
     CLIport.write(b'sensorStart
@@ -64,127 +68,96 @@ def serialConfig(cfgName):
     return CLIport, Dataport
 
 # ------------------------------------------------------------------
-# 解析配置文件，提取必要参数
+# 解析配置文件参数
 def parseConfigFile(cfgName):
-    lines = [l.strip() for l in open(cfgName)]
+    lines = [ln.strip() for ln in open(cfgName)]
     numRxAnt, numTxAnt = 4, 3
     for ln in lines:
         parts = ln.split()
         if parts[0] == 'profileCfg':
-            startFreq = float(parts[2])
-            idleTime = float(parts[3])
-            rampEndTime = float(parts[5])
-            freqSlope = float(parts[8])
-            numAdc = int(parts[10])
+            startFreq = float(parts[2]); idleTime = float(parts[3]); rampEndTime = float(parts[5])
+            freqSlope = float(parts[8]); numAdc = int(parts[10])
             adcsRound = 1
             while adcsRound < numAdc:
                 adcsRound <<= 1
             digOutRate = int(parts[11])
         elif parts[0] == 'frameCfg':
-            chirpStart = int(parts[1])
-            chirpEnd   = int(parts[2])
-            numLoops   = int(parts[3])
+            chirpStart = int(parts[1]); chirpEnd = int(parts[2]); numLoops = int(parts[3])
     numChirps = (chirpEnd - chirpStart + 1) * numLoops
-    params = {}
-    params['numDopplerBins']  = numChirps // numTxAnt
-    params['numRangeBins']    = adcsRound
-    params['rangeIdx2m']      = (3e8 * digOutRate * 1e3) / (2 * freqSlope * 1e12 * adcsRound)
-    params['dopplerRes']      = 3e8 / (2 * startFreq * 1e9 * (idleTime + rampEndTime) * 1e-6 * params['numDopplerBins'] * numTxAnt)
+    params = {
+        'numDopplerBins': numChirps // numTxAnt,
+        'numRangeBins': adcsRound,
+        'rangeIdx2m': (3e8 * digOutRate * 1e3) / (2 * freqSlope * 1e12 * adcsRound),
+        'dopplerRes': 3e8 / (2 * startFreq * 1e9 * (idleTime + rampEndTime) * 1e-6 * (numChirps // numTxAnt) * numTxAnt)
+    }
     return params
 
 # ------------------------------------------------------------------
-# 从串口读取并解析数据包，返回点云信息
+# 解析串口数据包，返回检测点
 def readAndParseData18xx(Dataport, cfgParams):
     global byteBuffer, byteBufferLength
-    # 常量定义
-    MMWDEMO_UART_MSG_DETECTED_POINTS      = 1
-    MMWDEMO_OUTPUT_MSG_RANGE_DOPPLER_HEAT_MAP = 5
-    maxBufferSize = 2**15
+    MDEMO_UART_MSG_DETECTED = 1
+    maxSize = 2**15
     magicWord = [2,1,4,3,6,5,8,7]
-
-    dataOK = False
-    frameNumber = 0
-    detObj = {}
-
-    # 读取串口缓存
-    readBytes = Dataport.read(Dataport.in_waiting or 1)
-    byteVec = np.frombuffer(readBytes, dtype='uint8')
-    count = len(byteVec)
-    if byteBufferLength + count < maxBufferSize:
-        byteBuffer[byteBufferLength: byteBufferLength+count] = byteVec
-        byteBufferLength += count
-
-    # 查找 magic word
+    dataOK = False; frameNumber = 0; detObj = {}
+    size = Dataport.in_waiting
+    if size:
+        raw = Dataport.read(size)
+        buf = np.frombuffer(raw, dtype='uint8')
+        if byteBufferLength + len(buf) < maxSize:
+            byteBuffer[byteBufferLength: byteBufferLength+len(buf)] = buf
+            byteBufferLength += len(buf)
     if byteBufferLength > len(magicWord):
-        locs = np.where(byteBuffer == magicWord[0])[0]
-        startIdx = [i for i in locs if np.all(byteBuffer[i:i+len(magicWord)] == magicWord)]
-        if startIdx:
-            idx0 = startIdx[0]
-            byteBuffer[:byteBufferLength-idx0] = byteBuffer[idx0:byteBufferLength]
-            byteBufferLength -= idx0
-            totalLen = int(np.matmul(byteBuffer[12:16], [1,2**8,2**16,2**24]))
-            if byteBufferLength >= totalLen:
+        idxs = np.where(byteBuffer == magicWord[0])[0]
+        st = [i for i in idxs if np.all(byteBuffer[i:i+len(magicWord)] == magicWord)]
+        if st:
+            s0 = st[0]
+            byteBuffer[: byteBufferLength-s0] = byteBuffer[s0:byteBufferLength]
+            byteBufferLength -= s0
+            pktLen = int(np.matmul(byteBuffer[12:16], [1,2**8,2**16,2**24]))
+            if byteBufferLength >= pktLen:
                 dataOK = True
-                idX = 0
-                idX += 20  # skip magic(8)+version(4)+pktLen(4)+platform(4)
-                frameNumber = int(np.matmul(byteBuffer[idX:idX+4], [1,2**8,2**16,2**24])); idX += 4
-                numDet = int(np.matmul(byteBuffer[idX:idX+4], [1,2**8,2**16,2**24])); idX += 4
-                numTLV = int(np.matmul(byteBuffer[idX:idX+4], [1,2**8,2**16,2**24])); idX += 4
+                i = 0; i += 8+4+4+4
+                frameNumber = int(np.matmul(byteBuffer[i:i+4], [1,2**8,2**16,2**24])); i+=4
+                numDet = int(np.matmul(byteBuffer[i:i+4], [1,2**8,2**16,2**24])); i+=4
+                numTLV = int(np.matmul(byteBuffer[i:i+4], [1,2**8,2**16,2**24])); i+=4
                 for _ in range(numTLV):
-                    tlvType = int(np.matmul(byteBuffer[idX:idX+4], [1,2**8,2**16,2**24])); idX += 4
-                    tlvLen  = int(np.matmul(byteBuffer[idX:idX+4], [1,2**8,2**16,2**24])); idX += 4
-                    if tlvType == MMWDEMO_UART_MSG_DETECTED_POINTS:
+                    tlvT = int(np.matmul(byteBuffer[i:i+4], [1,2**8,2**16,2**24])); i+=4
+                    tlvL = int(np.matmul(byteBuffer[i:i+4], [1,2**8,2**16,2**24])); i+=4
+                    if tlvT == MDEMO_UART_MSG_DETECTED:
                         x = np.zeros(numDet, dtype=np.float32)
                         y = np.zeros(numDet, dtype=np.float32)
-                        z = np.zeros(numDet, dtype=np.float32)
-                        v = np.zeros(numDet, dtype=np.float32)
-                        for idx in range(numDet):
-                            x[idx] = byteBuffer[idX:idX+4].view(np.float32); idX += 4
-                            y[idx] = byteBuffer[idX:idX+4].view(np.float32); idX += 4
-                            z[idx] = byteBuffer[idX:idX+4].view(np.float32); idX += 4
-                            v[idx] = byteBuffer[idX:idX+4].view(np.float32); idX += 4
-                        detObj = {'numObj':numDet, 'x':x, 'y':y, 'z':z, 'velocity':v}
+                        for k in range(numDet):
+                            x[k] = byteBuffer[i:i+4].view('float32'); i+=4
+                            y[k] = byteBuffer[i:i+4].view('float32'); i+=4
+                            i += 8
+                        detObj = {'numObj':numDet, 'x':x, 'y':y}
                     else:
-                        idX += tlvLen
-                # 清理 buffer
-                byteBuffer[:byteBufferLength-totalLen] = byteBuffer[totalLen:byteBufferLength]
-                byteBufferLength -= totalLen
-
+                        i += tlvL
+                byteBuffer[: byteBufferLength-pktLen] = byteBuffer[pktLen:byteBufferLength]
+                byteBufferLength -= pktLen
     return dataOK, frameNumber, detObj
 
-# ------------------------------------------------------------------
-# 定时调用：更新并绘制
+# 定时更新绘图
 def update():
-    dataOk, fnum, detObj = readAndParseData18xx(Dataport, configParameters)
-    if dataOk and 'x' in detObj and len(detObj['x'])>0:
-        s.setData(-detObj['x'], detObj['y'])
-    return dataOk
+    ok, fn, dobj = readAndParseData18xx(Dataport, configParameters)
+    if ok and 'x' in dobj and len(dobj['x']):
+        s.setData(-dobj['x'], dobj['y'])
+    return ok
 
-# ------------------------- 主程序 -------------------------
+# 主程序
 if __name__ == '__main__':
-    # 初始化
     CLIport, Dataport = serialConfig(configFileName)
-    configParameters    = parseConfigFile(configFileName)
-
-    # GUI 界面
+    configParameters = parseConfigFile(configFileName)
     app = QtWidgets.QApplication([])
     pg.setConfigOption('background', 'w')
     win = pg.GraphicsLayoutWidget(title="2D scatter plot")
     p = win.addPlot()
-    p.setXRange(-0.5, 0.5)
-    p.setYRange(0, 1.5)
-    p.setLabel('left',   text='Y position (m)')
+    p.setXRange(-0.5,0.5); p.setYRange(0,1.5)
+    p.setLabel('left', text='Y position (m)')
     p.setLabel('bottom', text='X position (m)')
-    s = p.plot([], [], pen=None, symbol='o')
+    s = p.plot([],[],pen=None,symbol='o')
     win.show()
-
-    # 定时更新
-    timer = QtCore.QTimer()
-    timer.timeout.connect(update)
-    timer.start(50)
+    tmr = QtCore.QTimer(); tmr.timeout.connect(update); tmr.start(50)
     app.exec_()
-
-    # 退出清理
-    CLIport.write(b'sensorStop\n')
-    CLIport.close()
-    Dataport.close()
+    CLIport.write(b'sensorStop\n'); CLIport.close(); Dataport.close()
