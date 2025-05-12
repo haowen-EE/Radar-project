@@ -73,7 +73,10 @@ https://github.com/user-attachments/assets/586cbce0-f92e-40dd-9765-55d19d0a6f12
 
 ## 2025‑05-09
 - Today, the focus shifts to enhancing data processing efficiency and conducting algorithm pre-research. Firstly, the verified TLV parsing module is encapsulated as a Python package to complete the buffering management and concurrent read and write optimization of continuous flow data, and the parsing throughput rate is tested under different data scales. Subsequently, based on the processed point cloud data, the CFAR object detection and background noise filtering processes were initially implemented, and two filtering strategies, namely the sliding window and the statistical model, were compared. Immediately afterwards, a small-scale real-time demonstration environment was set up. The radar startup, configuration and acquisition were automatically controlled through Python scripts, and the stability of the scripts was verified. Finally, the performance test results of today were sorted out, the selection of classification algorithms and GPU acceleration schemes for the next stage were formulated, and the technical routes of multi-target tracking and micro-Doppler feature extraction were clarified.
-![image](https://github.com/user-attachments/assets/f2381422-22de-447b-9173-dc053102c455)
+https://github.com/user-attachments/assets/8f1979ce-110f-4194-89ce-c032b8ca1bde
+
+
+
 
 
 
