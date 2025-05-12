@@ -78,7 +78,17 @@ https://github.com/user-attachments/assets/586cbce0-f92e-40dd-9765-55d19d0a6f12
 
 https://github.com/user-attachments/assets/3e56d54b-3c71-453a-b472-a76d9cf33eaf
 
+## 2025‑05-12
+- At the beginning, I opened the original csv_to_3d3.py script, combined with the CSV samples at hand, and compared the effect displayed by each frame of data. I found that all point clouds appeared concentratedly at the 0.000th second, and it was impossible to distinguish the time evolution at all. After browsing the code and confirming, it directly uses subFrame as the grouping key, while in our single-frame mode, this field is always zero, resulting in the aggregation of all frame data together.
+- When deeply debugging the CSV file, I noticed that there was a detIdx field in each row of records, which was reset to 0 during the first detection of each frame. So I decided to use it to divide frames: when encountering detIdx == 0, a new frame was opened and the subsequent coordinate points were classified into this new frame. In this way, even if the subframes remain unchanged, the point cloud sequences of each frame can still be accurately separated.
+- Next, I extract the timeStamp of the first record of each frame in the script and calculate the true time difference between two adjacent frames. Since the timestamps of some frames are the same (subframes share the same moment), I forcibly set it to 1 millisecond when the difference is less than or equal to zero to ensure that the time axis increases strictly. If the parsing fails, it will return to the default 50 ms. After accumulating all the differences, a rel_times list of the same length as the number of frames was obtained, which was used as the driving sequence of the animation.
+- After modifying the data framing and timeline parts, I reconstructed the timer callback: Each time the QElapsedTimer is triggered, the current elapsed seconds are compared with rel_times[idx+1], and the index is advanced by one frame only when it exceeds. This logic enables the scatter plot to be presented from the first frame and gradually switch to the next frame as real time progresses, completely eliminating the problem of all frames being stacked at once.
+- Multiple tests were conducted on real data. The playback effects at common frame rates of 50 ms and 71.429 ms were verified successively, and the scenarios where multiple subframes shared timestamps were also tested. The results show that the new script can smoothly and accurately display the radar point cloud in the chronological order recorded in the CSV. Whether in single-frame mode or multi-subframe configuration, it can correctly frame and broadcast.
+- So far, the entire process from "debugging and positioning" → "frame reconfiguration" → "timeline calculation" → "timed playback" → "test verification" has been completed, and the script has achieved the expected goal. Next, I plan to incorporate playback control and performance optimization to further enhance the visual experience.
 
+
+
+https://github.com/user-attachments/assets/4e01902e-ed21-4507-be0e-52726a65e34d
 
 
 
