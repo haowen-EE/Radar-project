@@ -90,7 +90,8 @@ https://github.com/user-attachments/assets/3e56d54b-3c71-453a-b472-a76d9cf33eaf
 
 https://github.com/user-attachments/assets/4e01902e-ed21-4507-be0e-52726a65e34d
 
-
+## 2025-07-07
+-End the exams and the vacation, and then start to advance the project. During the testing of the code, an error was encountered. After checking, it was found to be a path error. After moving the file to the correct location, the code ran normally. Then, relevant radar movement data needs to be collected.
 
 
 
