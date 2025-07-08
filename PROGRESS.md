@@ -93,6 +93,8 @@ https://github.com/user-attachments/assets/4e01902e-ed21-4507-be0e-52726a65e34d
 ## 2025-07-07
 -End the exams and the vacation, and then start to advance the project. During the testing of the code, an error was encountered. After checking, it was found to be a path error. After moving the file to the correct location, the code ran normally. Then, relevant radar movement data needs to be collected.
 
-
+## 2025-07-08
+-The CSV fields (x, y, z, v, etc. representing physical quantities) were confirmed and previewed, and the input and output of clustering and speed threshold classification were clarified. 
+Wrote and debugged a Python script, using DBSCAN to cluster the three-dimensional point cloud, calculate the average speed, and determine "dangerous scooters" based on a speed of > 4 m/s.
 
 
