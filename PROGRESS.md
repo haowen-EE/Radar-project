@@ -99,3 +99,6 @@ Wrote and debugged a Python script, using DBSCAN to cluster the three-dimensiona
 
 ## 2025-07-16
 -First, use the final_radar_cfg_document.cfg configuration to start the mmWave Demo and generate a new .dat file. Then, specify the .dat file name in dat_to_csv2.py and write the frame interval (50 ms) to output a CSV with a timestamp. Then, load this CSV in 3D_clustering.py and perform clustering and segmentation on the point cloud based on DBSCAN. Finally, read the same CSV again in csv_to_3d3.py and draw a 3D point cloud with speed labels after clustering to achieve integrated detection and visualization.
+-set the suitable cfg
+<img width="531" height="252" alt="image" src="https://github.com/user-attachments/assets/d3fc8b4f-43b9-4aba-938c-58cb43ab1d72" />
+
