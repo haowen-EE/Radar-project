@@ -97,4 +97,5 @@ https://github.com/user-attachments/assets/4e01902e-ed21-4507-be0e-52726a65e34d
 -The CSV fields (x, y, z, v, etc. representing physical quantities) were confirmed and previewed, and the input and output of clustering and speed threshold classification were clarified. 
 Wrote and debugged a Python script, using DBSCAN to cluster the three-dimensional point cloud, calculate the average speed, and determine "dangerous scooters" based on a speed of > 4 m/s.
 
-
+## 2025-07-16
+-First, use the final_radar_cfg_document.cfg configuration to start the mmWave Demo and generate a new .dat file. Then, specify the .dat file name in dat_to_csv2.py and write the frame interval (50 ms) to output a CSV with a timestamp. Then, load this CSV in 3D_clustering.py and perform clustering and segmentation on the point cloud based on DBSCAN. Finally, read the same CSV again in csv_to_3d3.py and draw a 3D point cloud with speed labels after clustering to achieve integrated detection and visualization.
