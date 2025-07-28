@@ -104,11 +104,19 @@ Wrote and debugged a Python script, using DBSCAN to cluster the three-dimensiona
 
 ## 2025-07-28
 Debugging of DBSCAN clustering algorithm
+
 -Different parameters of eps (0.3, 0.6) and min_samples (35) were tested, and it was determined that for pedestrians and electric scooters, eps≈0.5 and min_samples=3 to 4 were the most appropriate.
+
 -The eps selection has been optimized for the slender structure (handlebars/base) of the scooter. It is recommended that eps=0.55 and min_samples=3.
+
 Behavior recognition extension
+
 -It was discussed how to distinguish normal driving from raising hands actions through the z_range and x_range of clusters.
+
 -In the cluster analysis phase of the code, a structural judgment logic has been added to detect the base of the scooter or the gesture of raising hands.
+
 Code update and optimization
+
 -The structure analysis and classification process in the for cluster_id loop has been improved.
+
 -The optional visualization function plot_clusters() is provided to assist in debugging eps and clustering effects.
