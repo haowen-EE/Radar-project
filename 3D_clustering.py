@@ -4,7 +4,7 @@ from sklearn.cluster import DBSCAN
 
 # 参数配置
 csv_file = 'xwr18xx_AOP_processed_stream_2025_05_12T04_57_17_397_with_timestamp2.csv'
-eps = 0.4        # DBSCAN 聚类半径 (可根据场景调节)
+eps = 0.55        # DBSCAN 聚类半径 (可根据场景调节)
 min_samples = 3   # DBSCAN 最小样本数 (可根据场景调节)
 speed_threshold = 4.0  # >4 m/s 判定为“危险电动滑板车”
 
