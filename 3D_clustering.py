@@ -37,7 +37,7 @@ def main():
         y_range = cluster_pts['y'].max() - cluster_pts['y'].min()
         z_range = cluster_pts['z'].max() - cluster_pts['z'].min()
         
-        if x_range > 1.0 and z_range <1.2
+        if x_range > 1.0 and z_range <0.3
             printf(f"Cluster {cluster_id} 可能是滑板车底座（横向长，竖向短）")
         elif z_range > 1.7:
             print(f"Cluster {cluster_id} 可能是举手人或滑板车带人")
