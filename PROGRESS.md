@@ -122,4 +122,4 @@ Code update and optimization
 -The optional visualization function plot_clusters() is provided to assist in debugging eps and clustering effects.
 
 ## 2025-07-29
-Set the suitable number for e-scooter.
+Set the suitable number for e-scooter(bottom & humen)
