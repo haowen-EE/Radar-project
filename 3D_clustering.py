@@ -31,6 +31,12 @@ def main():
         if cluster_id == -1:
             continue  # 忽略噪声点
         cluster_pts = df[df['cluster'] == cluster_id]
+
+        #demo 结构分析部分，判断空间扩展范围（滑板车和人）
+        x_range = cluster_pts['x'].max() - cluster_pts['x'].min()
+        y_range = cluster_pts['y'].max() - cluster_pts['y'].min()
+        z_range = cluster_pts['z'].max() - cluster_pts['z'].min()
+        
         avg_speed = np.mean(np.abs(cluster_pts['v']))
         cls = 'Dangerous e-scooter' if avg_speed > speed_threshold else 'Pedestrian/Other'
         results.append({
