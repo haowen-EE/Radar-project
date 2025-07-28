@@ -120,3 +120,6 @@ Code update and optimization
 -The structure analysis and classification process in the for cluster_id loop has been improved.
 
 -The optional visualization function plot_clusters() is provided to assist in debugging eps and clustering effects.
+
+## 2025-07-29
+Set the suitable number for e-scooter.
