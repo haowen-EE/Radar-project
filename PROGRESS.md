@@ -123,3 +123,16 @@ Code update and optimization
 
 ## 2025-07-29
 Set the suitable number for e-scooter(bottom & humen)
+
+## 2025-07-30
+-Point Cloud Clustering and Visualization Animation Optimization 
+
+The three-dimensional point cloud clustering based on DBSCAN and the dynamic bounding box visualization have been realized. Each frame is automatically updated, facilitating the observation of the spatial distribution and movement process of pedestrians and electric scooters. 
+
+To address the issues of overly rapid animation and sudden changes in the coordinate axis range, the animation speed has been successfully optimized, and a global fixed coordinate axis has been implemented, thereby enhancing the intuitiveness and professionalism of data presentation. 
+
+-Code debugging and function expansion 
+
+The common errors such as function definitions, file paths, and parameter configurations have been gradually corrected. 
+
+The definition of the bounding box has been clarified: The bounding box of each clustering cluster is the smallest enclosing cube for all the points of that cluster (automatically generated based on the maximum and minimum values of x/y/z).
