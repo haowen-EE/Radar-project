@@ -91,47 +91,47 @@ https://github.com/user-attachments/assets/3e56d54b-3c71-453a-b472-a76d9cf33eaf
 https://github.com/user-attachments/assets/4e01902e-ed21-4507-be0e-52726a65e34d
 
 ## 2025-07-07
--End the exams and the vacation, and then start to advance the project. During the testing of the code, an error was encountered. After checking, it was found to be a path error. After moving the file to the correct location, the code ran normally. Then, relevant radar movement data needs to be collected.
+- End the exams and the vacation, and then start to advance the project. During the testing of the code, an error was encountered. After checking, it was found to be a path error. After moving the file to the correct location, the code ran normally. Then, relevant radar movement data needs to be collected.
 
 ## 2025-07-08
--The CSV fields (x, y, z, v, etc. representing physical quantities) were confirmed and previewed, and the input and output of clustering and speed threshold classification were clarified. 
+- The CSV fields (x, y, z, v, etc. representing physical quantities) were confirmed and previewed, and the input and output of clustering and speed threshold classification were clarified. 
 Wrote and debugged a Python script, using DBSCAN to cluster the three-dimensional point cloud, calculate the average speed, and determine "dangerous scooters" based on a speed of > 4 m/s.
 
 ## 2025-07-16
--First, use the final_radar_cfg_document.cfg configuration to start the mmWave Demo and generate a new .dat file. Then, specify the .dat file name in dat_to_csv2.py and write the frame interval (50 ms) to output a CSV with a timestamp. Then, load this CSV in 3D_clustering.py and perform clustering and segmentation on the point cloud based on DBSCAN. Finally, read the same CSV again in csv_to_3d3.py and draw a 3D point cloud with speed labels after clustering to achieve integrated detection and visualization.
+- First, use the final_radar_cfg_document.cfg configuration to start the mmWave Demo and generate a new .dat file. Then, specify the .dat file name in dat_to_csv2.py and write the frame interval (50 ms) to output a CSV with a timestamp. Then, load this CSV in 3D_clustering.py and perform clustering and segmentation on the point cloud based on DBSCAN. Finally, read the same CSV again in csv_to_3d3.py and draw a 3D point cloud with speed labels after clustering to achieve integrated detection and visualization.
 -set the suitable cfg
 <img width="531" height="252" alt="image" src="https://github.com/user-attachments/assets/d3fc8b4f-43b9-4aba-938c-58cb43ab1d72" />
 
 ## 2025-07-28
 Debugging of DBSCAN clustering algorithm
 
--Different parameters of eps (0.3, 0.6) and min_samples (35) were tested, and it was determined that for pedestrians and electric scooters, eps≈0.5 and min_samples=3 to 4 were the most appropriate.
+- Different parameters of eps (0.3, 0.6) and min_samples (35) were tested, and it was determined that for pedestrians and electric scooters, eps≈0.5 and min_samples=3 to 4 were the most appropriate.
 
--The eps selection has been optimized for the slender structure (handlebars/base) of the scooter. It is recommended that eps=0.55 and min_samples=3.
+- The eps selection has been optimized for the slender structure (handlebars/base) of the scooter. It is recommended that eps=0.55 and min_samples=3.
 
 Behavior recognition extension
 
--It was discussed how to distinguish normal driving from raising hands actions through the z_range and x_range of clusters.
+- It was discussed how to distinguish normal driving from raising hands actions through the z_range and x_range of clusters.
 
--In the cluster analysis phase of the code, a structural judgment logic has been added to detect the base of the scooter or the gesture of raising hands.
+- In the cluster analysis phase of the code, a structural judgment logic has been added to detect the base of the scooter or the gesture of raising hands.
 
 Code update and optimization
 
--The structure analysis and classification process in the for cluster_id loop has been improved.
+- The structure analysis and classification process in the for cluster_id loop has been improved.
 
--The optional visualization function plot_clusters() is provided to assist in debugging eps and clustering effects.
+- The optional visualization function plot_clusters() is provided to assist in debugging eps and clustering effects.
 
 ## 2025-07-29
 Set the suitable number for e-scooter(bottom & humen)
 
 ## 2025-07-30
--Point Cloud Clustering and Visualization Animation Optimization 
+- Point Cloud Clustering and Visualization Animation Optimization 
 
 The three-dimensional point cloud clustering based on DBSCAN and the dynamic bounding box visualization have been realized. Each frame is automatically updated, facilitating the observation of the spatial distribution and movement process of pedestrians and electric scooters. 
 
 To address the issues of overly rapid animation and sudden changes in the coordinate axis range, the animation speed has been successfully optimized, and a global fixed coordinate axis has been implemented, thereby enhancing the intuitiveness and professionalism of data presentation. 
 
--Code debugging and function expansion 
+- Code debugging and function expansion 
 
 The common errors such as function definitions, file paths, and parameter configurations have been gradually corrected. 
 
