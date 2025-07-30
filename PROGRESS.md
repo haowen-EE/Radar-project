@@ -136,3 +136,8 @@ To address the issues of overly rapid animation and sudden changes in the coordi
 The common errors such as function definitions, file paths, and parameter configurations have been gradually corrected. 
 
 The definition of the bounding box has been clarified: The bounding box of each clustering cluster is the smallest enclosing cube for all the points of that cluster (automatically generated based on the maximum and minimum values of x/y/z).
+
+
+https://github.com/user-attachments/assets/bd1811ac-aaac-42c8-9866-a27c048ac53e
+
+
