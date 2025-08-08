@@ -140,4 +140,5 @@ The definition of the bounding box has been clarified: The bounding box of each 
 
 https://github.com/user-attachments/assets/bd1811ac-aaac-42c8-9866-a27c048ac53e
 
-
+## 2025-08-08
+- Debug
