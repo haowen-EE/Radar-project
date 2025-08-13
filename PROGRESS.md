@@ -171,3 +171,6 @@ With target: point cloud + AABB + rigid L+human overlay; Doppler goes through ze
 No target: only point cloud + AABB; “No target detected” text; no rigid model/Doppler.
 - 5) Quick Validation
 Axes & units consistent; correct frame splitting with detIdx==0 at frame start; visible Doppler zero-crossing.
+# The Model:
+<img width="1196" height="1242" alt="scooter_human_model" src="https://github.com/user-attachments/assets/a6670ca0-b268-4b6d-91b6-8cd9da35145d" />
+
