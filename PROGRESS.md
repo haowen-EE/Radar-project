@@ -149,3 +149,25 @@ https://github.com/user-attachments/assets/bd1811ac-aaac-42c8-9866-a27c048ac53e
 ![d2bfedb17e99c0c6e0e6e3c3ae654c2](https://github.com/user-attachments/assets/ed0e86df-82fb-46d4-bb0b-7119a7c6f217)
 ![5de46a6e0bc4d27fab936efcd360b23](https://github.com/user-attachments/assets/69b920eb-d4e0-4be3-9cad-71762c699e53)
 
+- 1) Goals
+Integrate the L-shaped e-scooter model + human cylinder with the existing point-cloud animation.
+
+Add Doppler/radial velocity computation/overlay for a roadside radar geometry.
+
+Fix logic to detect-then-track so no target is drawn when the data has none
+- 2) Key Changes
+Updated 3D_clustering_with_boxes.py with clearly marked blocks:
+
+# === NEW: ... === (initial integration)
+
+# === NEW(v2): ... ===, # === CHANGED(v2): ... === (detect-then-track)
+- 3) Interfaces & Defaults
+animate(...): interval_ms=1000, fc=77e9, tracker alpha=0.6, beta=0.2, max_miss=0.
+
+Detection gates (DETECT_CFG): width/length/height ranges as above; zmin_max=0.25 m; min_points=20; score_thresh=4.0.
+- 4) Expected Behavior
+With target: point cloud + AABB + rigid L+human overlay; Doppler goes through zero near closest approach.
+
+No target: only point cloud + AABB; “No target detected” text; no rigid model/Doppler.
+- 5) Quick Validation
+Axes & units consistent; correct frame splitting with detIdx==0 at frame start; visible Doppler zero-crossing.
