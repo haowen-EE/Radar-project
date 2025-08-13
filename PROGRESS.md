@@ -158,9 +158,9 @@ Fix logic to detect-then-track so no target is drawn when the data has none
 - 2) Key Changes
 Updated 3D_clustering_with_boxes.py with clearly marked blocks:
 
-# === NEW: ... === (initial integration)
+=== NEW: ... === (initial integration)
 
-# === NEW(v2): ... ===, # === CHANGED(v2): ... === (detect-then-track)
+=== NEW(v2): ... ===, # === CHANGED(v2): ... === (detect-then-track)
 - 3) Interfaces & Defaults
 animate(...): interval_ms=1000, fc=77e9, tracker alpha=0.6, beta=0.2, max_miss=0.
 
