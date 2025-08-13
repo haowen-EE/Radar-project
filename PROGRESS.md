@@ -142,3 +142,10 @@ https://github.com/user-attachments/assets/bd1811ac-aaac-42c8-9866-a27c048ac53e
 
 ## 2025-08-08
 - Debug
+
+## 2025-08-13
+- Finished the mearsurement of E-scooter(Neuron). Got the Data of length, width and height of electric scooters. And draw the Top and side views.
+- ![c20be76b8aeb9d6fdaee5d077d42b0e](https://github.com/user-attachments/assets/46b78811-5ed9-4e85-b625-a7495b0e965e)
+![d2bfedb17e99c0c6e0e6e3c3ae654c2](https://github.com/user-attachments/assets/ed0e86df-82fb-46d4-bb0b-7119a7c6f217)
+![5de46a6e0bc4d27fab936efcd360b23](https://github.com/user-attachments/assets/69b920eb-d4e0-4be3-9cad-71762c699e53)
+
