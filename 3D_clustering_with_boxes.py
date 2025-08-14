@@ -35,7 +35,7 @@ def draw_bounding_box(ax, xmin, xmax, ymin, ymax, zmin, zmax, color='r', alpha=0
     box = Poly3DCollection(faces, alpha=alpha, facecolor=color, edgecolor='k', linewidths=0.8)
     ax.add_collection3d(box)
 
-# === NEW(v2): 几何与多普勒常量（与你给定的模型一致） ==========================
+# =============================
 # 坐标：x=横向(朝雷达)，y=沿道路，z=向上。地面 z=0。
 L_LEN = 1.17   # 外轮廓长度(沿 y), m
 L_W   = 0.23   # 宽度(沿 x), m
@@ -299,3 +299,4 @@ if __name__ == "__main__":
             interval_ms=1000,
             fc=77e9,
             max_miss=0)  # 0 = 本帧没检出就不显示，避免“无中生有”
+
