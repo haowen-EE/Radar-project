@@ -10,3 +10,16 @@ RCS
 
 
 <img width="423" height="112" alt="image" src="https://github.com/user-attachments/assets/a268607c-1c1e-4979-a93b-bcd3623721b7" />
+
+Record
+
+
+<img width="210" height="112" alt="image" src="https://github.com/user-attachments/assets/ec52023b-8f3c-4ff8-9b83-26899c0f0363" />
+
+
+
+## When collecting data
+
+Horizontal distance： 3m （2.5-3.5m）
+Installation height： 1.1m (1.0-1.2m)
+Pitch angle： -3° or 0°
