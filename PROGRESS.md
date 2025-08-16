@@ -181,5 +181,6 @@ Axes & units consistent; correct frame splitting with detIdx==0 at frame start; 
 - Add overspeed rule = 4 m/s for e-scooters
 - Data_collection_plan
   [Data_collection_plan.pdf](https://github.com/user-attachments/files/21810694/Data_collection_plan.pdf)
-![Uploading image.png…]()
+<img width="907" height="1326" alt="image" src="https://github.com/user-attachments/assets/122ec6b6-c0d1-48ed-9e5f-32321fef0162" />
+
 
