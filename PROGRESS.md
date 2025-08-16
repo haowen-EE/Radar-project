@@ -175,3 +175,10 @@ Axes & units consistent; correct frame splitting with detIdx==0 at frame start; 
 <img width="1196" height="1242" alt="scooter_human_model" src="https://github.com/user-attachments/assets/a6670ca0-b268-4b6d-91b6-8cd9da35145d" />
 <img width="1429" height="880" alt="scooter_human_side_view" src="https://github.com/user-attachments/assets/42f5f517-90a8-4de7-9b48-e28bf6813257" />
 
+## 2025-08-16
+- Make the model (L-shaped e-scooter + human cylinder) work end-to-end on our point-cloud
+- Add a pedestrian model, and unify detection
+- Add overspeed rule = 4 m/s for e-scooters
+- Data_collection_plan
+  [Data_collection_plan.pdf](https://github.com/user-attachments/files/21810694/Data_collection_plan.pdf)
+
