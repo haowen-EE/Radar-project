@@ -21,5 +21,7 @@ Record
 ## When collecting data
 
 Horizontal distance： 3m （2.5-3.5m）
+
 Installation height： 1.1m (1.0-1.2m)
+
 Pitch angle： -3° or 0°
