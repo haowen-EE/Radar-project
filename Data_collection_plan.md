@@ -9,17 +9,26 @@ Lateral offset d₀ = 3.0 m, mount height h = 1.1 m, tilt = −3°
 - Max Radial Velocity: ±8 m/s 
 - Radial Velocity Resolution: 0.40 m/s 
 - Real-Time Tuning:
+  
   Group Peaks (Range/Doppler): ON
+  
   Remove Static Clutter: ON
-  CFAR: Range 17 dB, Doppler 14 dB 
+  
+  CFAR: Range 17 dB, Doppler 14 dB
+  
   FOV: Azimuth ±90°. Elevation −10° to +15°
+  
   Gates: Range 0.5–12 m; Doppler −8 to +8 m/s
+
 ## 4) Recording
 File Size Max: 50 MB
-Record time: scooter 10–12 s; pedestrian 18–20 s
+Record time: scooter 10–12 s; 
+
+pedestrian 18–20 s
 ## 5) Collection procedure
 1.	Pedestrians (2 speeds, 3 trials each): slow 1.2–1.3 m/s; fast ~1.6 m/s.
 2.	E-scooters (3 speeds, 3 trials each): 3.0 m/s (legal), 4.0 m/s (overspeed), 5.0–6.0 m/s (dangerous).
 3.	Naming: type_speed_d3_trialXX.csv.
 4.	Optional: synchronized phone video at 60 fps; clap at start for time alignment.
-## 6) Outputs & organizing： Save each pass: CSV.
+## 6) Outputs & organizing： 
+Save each pass: CSV.
