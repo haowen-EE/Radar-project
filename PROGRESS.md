@@ -205,3 +205,26 @@ Need & changes:
 Original script failed for some .dat/.cfg pairs.
 
 Switch to parsing the paired .cfg (sample rate, antennas/virtual channels, chirp/frame, etc.) to drive decoding.
+
+## 2025-09-03
+
+Point-cloud coordinates & pedestrian speed correction (core issue)
+
+Scene geometry (confirmed for calibration):
+
+Radar mounted perpendicular to road centerline, with a 3 m lateral offset from the centerline.
+
+Pedestrians walk along the centerline (far→near, then near→far).
+
+Motion is planar; units meters.
+
+Symptoms:
+
+Pedestrian speeds are grossly over-estimated (often 10–20 m/s), with cumulative “10→30→50 m/s” across repeated experiments.
+
+Confirm detIdx == 0 means a new frame → velocity chains must reset at frame boundaries, otherwise historical displacement leaks into current speed.
+
+Constraint: Do not change axes; fix speed only.
+
+Data: Among four CSVs, twopeople_parallel.csv is the most complete for detection; all four show speed bias.
+
