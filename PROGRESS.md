@@ -195,3 +195,13 @@ Confirmed source: TI mmWave Demo Visualizer exports.
 Reworked read/write paths and unpack logic per your project directory.
 
 Identified root cause: parser wasn’t generalizing across different .cfg parameters; proposed a “read from .cfg” adaptive approach.
+
+
+## 2025-09-02 
+- Generalized .dat + .cfg → .csv converter
+
+Need & changes:
+
+Original script failed for some .dat/.cfg pairs.
+
+Switch to parsing the paired .cfg (sample rate, antennas/virtual channels, chirp/frame, etc.) to drive decoding.
