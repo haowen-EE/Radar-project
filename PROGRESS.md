@@ -183,4 +183,15 @@ Axes & units consistent; correct frame splitting with detIdx==0 at frame start; 
   [Data_collection_plan.pdf](https://github.com/user-attachments/files/21810694/Data_collection_plan.pdf)
 <img width="907" height="1326" alt="image" src="https://github.com/user-attachments/assets/122ec6b6-c0d1-48ed-9e5f-32321fef0162" />
 
+## 2025-08-24
+- .dat → .csv blank outputs & pipeline debugging
 
+Symptoms: Some .dat files yield blank/incomplete .csv.
+
+Actions:
+
+Confirmed source: TI mmWave Demo Visualizer exports.
+
+Reworked read/write paths and unpack logic per your project directory.
+
+Identified root cause: parser wasn’t generalizing across different .cfg parameters; proposed a “read from .cfg” adaptive approach.
