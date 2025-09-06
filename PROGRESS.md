@@ -228,3 +228,44 @@ Constraint: Do not change axes; fix speed only.
 
 Data: Among four CSVs, twopeople_parallel.csv is the most complete for detection; all four show speed bias.
 
+## 2025-09-05
+
+Clustering/correlation parameters
+
+Raster clustering: cell=0.7 m, min_points=3;
+
+Association threshold: assoc_gate = max(1.8, 5*dt_med*2).
+
+Validate at keep_walking.csv
+
+Results: Stable identification, velocity of 0.8–2 m/s; Missed detections are reduced.
+
+Verify at old_man_pass.csv
+
+Results: Slow passage can be identified; The extremely slow section (<0.3 m/s) was judged to be immobile/unstable.
+
+Verify at twopeople_parallel.csv
+
+Results: Two people can be tracked simultaneously in parallel, and the ID is stable. Speed 0.5–2.1 m/s.
+
+Initial test in keep_run.csv
+
+Results: The running segment was not confirmed (speed often > 3 m/s, exceeding the "walking limit" and not scoring).
+
+Relaxation of parameters for running (Scheme A)
+
+WALK_SPEED_HI 3.0→7.0 m/s;
+
+SPEED_SANITY_MAX 5.0→9.0 m/s;
+
+ASSOC_GATE_BASE_M 1.8→2.4 m.
+
+Retest at keep_run.csv
+
+Results: Running back and forth can be stably recognized and locked; The velocity distribution was 2.5–5 m/s, and there was no more 10–20 m/s anomaly.
+
+Optional Logic Tests (Protocol B)
+
+Remove the "upper speed limit" in the confirmation condition, and keep only v ≥ 0.3 m/s and the minimum duration and height threshold.
+
+Result: Both walk/run can be confirmed, which is convenient for subsequent labeling according to speed (walk/jog/run).
