@@ -19,6 +19,26 @@ import pyqtgraph.opengl as gl
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(SCRIPT_DIR, 'Data')
 
+# === 部署与滑板车几何（根据现场信息） ===
+RADAR_CENTERLINE_OFFSET_M = 3.0       # 雷达距道路中线 3 m
+RADAR_HEIGHT_M = 0.60                 # 雷达安装高度约 0.5~0.7 m，取 0.6 m 作为基准
+
+SCOOTER_DECK_LENGTH_M = 1.17
+SCOOTER_STAND_LENGTH_M = 0.73
+SCOOTER_STAND_CENTER_FROM_POLE_M = SCOOTER_STAND_LENGTH_M * 0.5
+SCOOTER_DECK_WIDTH_M = 0.23
+SCOOTER_DECK_THICKNESS_M = 0.20
+SCOOTER_POLE_HEIGHT_M = 1.05
+SCOOTER_TOTAL_HEIGHT_M = SCOOTER_DECK_THICKNESS_M + SCOOTER_POLE_HEIGHT_M
+
+# 垂直/水平门限（含容差，避免漏检真实滑板车）
+SCOOTER_HEIGHT_GATE = (SCOOTER_TOTAL_HEIGHT_M - 0.30, SCOOTER_TOTAL_HEIGHT_M + 0.90)
+SCOOTER_BASE_HEIGHT_TOL = 0.55
+SCOOTER_LANE_TOLERANCE = 2.1
+SCOOTER_LANE_NEAR_RADAR_TOL = 0.5
+
+SCOOTER_DANGER_SPEED = 5.5            # >5.5 m/s 视为危险驾驶
+
 
 def _default_csv_file():
     candidates = []
@@ -89,7 +109,7 @@ DISP_FACTOR = 1.25
 
 # ---- 行人判定（保持原始，不做抑制，确保能识别） ----
 WALK_SPEED_LO = 0.3
-WALK_SPEED_HI = 7.0
+WALK_SPEED_HI = 3.5
 MIN_DURATION_S = 0.5
 Y_EXTENT_MIN = 0.35
 CONFIRM_SCORE = 3
@@ -128,8 +148,23 @@ LABEL_OBJECT = True
 ESCOOTER_CFG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  'escooter_rider_config.json')
 
-# 缺省门限（无 JSON 时使用；与文档一致）
-ESCOOTER_SHAPE_GATE = dict(L_min=1.0, L_max=1.6, W_min=0.20, W_max=0.80, axis_ratio_min=1.8)
+SCOOTER_LENGTH_RANGE = (
+    max(0.85, SCOOTER_DECK_LENGTH_M - 0.25),
+    SCOOTER_DECK_LENGTH_M + 0.35,
+)
+SCOOTER_WIDTH_RANGE = (
+    max(0.16, SCOOTER_DECK_WIDTH_M - 0.07),
+    SCOOTER_DECK_WIDTH_M + 0.45,
+)
+
+# 缺省门限（无 JSON 时使用；结合现场尺寸给出更精确的几何约束）
+ESCOOTER_SHAPE_GATE = dict(
+    L_min=SCOOTER_LENGTH_RANGE[0],
+    L_max=SCOOTER_LENGTH_RANGE[1],
+    W_min=SCOOTER_WIDTH_RANGE[0],
+    W_max=SCOOTER_WIDTH_RANGE[1],
+    axis_ratio_min=1.8,
+)
 ESCOOTER_DNEAR_RANGE = (0.16, 0.56)     # 典型
 ESCOOTER_SPEED_MEAN_MIN = 1.5
 ESCOOTER_VP90_MIN = 3.0
@@ -166,15 +201,22 @@ ESCOOTER_SCORE_MISS = 1
 ESCOOTER_CONFIRM_SCORE = 3
 ESCOOTER_LATCH_S = 1.0
 ESCOOTER_COLOR = (1.0, 0.8, 0.2, 1.0)
+ESCOOTER_DANGER_COLOR = (1.0, 0.3, 0.3, 1.0)
 ESCOOTER_BOX_WIDTH = 2
 ESCOOTER_LABEL = True
 
 def load_escooter_cfg(path=ESCOOTER_CFG_PATH):
     import json
-    cfg = dict(shape=ESCOOTER_SHAPE_GATE.copy(),
-               dnear=ESCOOTER_DNEAR_RANGE,
-               speed=(ESCOOTER_SPEED_MEAN_MIN, ESCOOTER_VP90_MIN),
-               stand=dict(center_from_pole=0.365, length=0.73, width=0.23))
+    cfg = dict(
+        shape=ESCOOTER_SHAPE_GATE.copy(),
+        dnear=ESCOOTER_DNEAR_RANGE,
+        speed=(ESCOOTER_SPEED_MEAN_MIN, ESCOOTER_VP90_MIN),
+        stand=dict(
+            center_from_pole=SCOOTER_STAND_CENTER_FROM_POLE_M,
+            length=SCOOTER_STAND_LENGTH_M,
+            width=SCOOTER_DECK_WIDTH_M,
+        ),
+    )
     try:
         with open(path, 'r', encoding='utf-8') as f:
             j = json.load(f)
@@ -497,6 +539,33 @@ def adapt_scooter_shape_gate_by_range(base_shape, r):
     return dict(L_min=L_min, L_max=base_shape['L_max'], W_min=base_shape['W_min'],
                 W_max=W_max, axis_ratio_min=AR_min)
 
+def scooter_vertical_gate(y_min, y_max):
+    span = max(0.0, float(y_max) - float(y_min))
+    base_offset = float(y_min) + RADAR_HEIGHT_M
+    height_ok = (SCOOTER_HEIGHT_GATE[0] <= span <= SCOOTER_HEIGHT_GATE[1])
+    base_ok = abs(base_offset) <= SCOOTER_BASE_HEIGHT_TOL
+    return height_ok and base_ok, {
+        'span': span,
+        'base_offset': base_offset,
+        'height_ok': height_ok,
+        'base_ok': base_ok,
+    }
+
+def scooter_lane_gate(cx, cz):
+    lateral = float(cz)
+    offset = abs(abs(lateral) - RADAR_CENTERLINE_OFFSET_M)
+    lane_ok = (offset <= SCOOTER_LANE_TOLERANCE) or (abs(lateral) <= SCOOTER_LANE_NEAR_RADAR_TOL)
+    return lane_ok, {
+        'lateral': lateral,
+        'offset': offset,
+        'lane_ok': lane_ok,
+    }
+
+def scooter_driving_state(speed):
+    if speed is None or not np.isfinite(speed):
+        return 'unknown'
+    return 'dangerous' if float(speed) > SCOOTER_DANGER_SPEED else 'normal'
+
 # ================= 轨迹类 =================
 
 class Track:
@@ -693,6 +762,9 @@ class Track:
         AR = float(max(L,W)/max(1e-6, min(L,W)))
         dnear_lo, dnear_hi = cfg['dnear']
 
+        vertical_ok, vertical_info = scooter_vertical_gate(feat['y_min'], feat['y_max'])
+        lane_ok, lane_info = scooter_lane_gate(self.c_smooth[0], self.c_smooth[1])
+
         v_mean = self.speed_robust()
         if v_mean >= ESCOOTER_FAST_SPEED:  # 高速补偿：放宽 d_near
             dnear_lo = max(0.0, dnear_lo - ESCOOTER_DNEAR_PAD_FAST_LO)
@@ -704,6 +776,14 @@ class Track:
         # 人位置信号
         near_ok  = (dnear_lo <= feat['d_near'] <= dnear_hi)
 
+        feat['shape_ok'] = shape_ok
+        feat['n_ok'] = n_ok
+        feat['near_ok'] = near_ok
+        feat['vertical_ok'] = vertical_ok
+        feat['lane_ok'] = lane_ok
+        feat['vertical'] = vertical_info
+        feat['lane'] = lane_info
+
         # 冷启动速度豁免
         samples = len(self.speeds)
         if samples < SCOOTER_SPEED_SKIP_FRAMES:
@@ -712,11 +792,13 @@ class Track:
             v90 = self.vp90()
             sp_ok = (v_mean >= ESCOOTER_CFG['speed'][0]) and (True if v90 is None else (v90 >= ESCOOTER_CFG['speed'][1]))
 
-        ok = shape_ok and n_ok and near_ok and sp_ok
+        feat['speed_ok'] = sp_ok
+
+        ok = shape_ok and n_ok and near_ok and sp_ok and vertical_ok and lane_ok
 
         # —— 首 0.8 s 快速确认：形状+点数+速度≥4.0 即先确认（无需 d_near）——
         if (not self.escooter_confirmed) and (self.duration() <= SCOOTER_FAST_CONFIRM_MAX_AGE_S) \
-           and shape_ok and n_ok and (v_mean >= SCOOTER_FAST_CONFIRM_SPEED):
+           and shape_ok and n_ok and vertical_ok and lane_ok and (v_mean >= SCOOTER_FAST_CONFIRM_SPEED):
             self.escooter_confirmed = True
             self.lock_type = 'escooter'
             self.escooter_score = max(self.escooter_score, ESCOOTER_CONFIRM_SCORE)
@@ -850,7 +932,13 @@ def tracking_step(tracks, clusters, abs_time, frame_idx, assoc_gate):
         "objects": [],
         "escooters": [],
         "people": [],
-        "counts": {"obj": 0, "escooter": 0, "ped": 0},
+        "counts": {
+            "obj": 0,
+            "escooter": 0,
+            "ped": 0,
+            "escooter_normal": 0,
+            "escooter_dangerous": 0,
+        },
     }
 
     for tr in track_list:
@@ -865,13 +953,22 @@ def tracking_step(tracks, clusters, abs_time, frame_idx, assoc_gate):
 
         show_sc, feat = tr.update_escooter_state(abs_time, ESCOOTER_CFG)
         if show_sc and feat is not None:
+            speed_val = tr.speed_robust()
+            state = scooter_driving_state(speed_val)
+            is_dangerous = (state == 'dangerous')
             results["escooters"].append({
                 "track_id": tr.id,
                 "centroid": tr.last(),
-                "speed": tr.speed_robust(),
+                "speed": speed_val,
                 "features": feat,
+                "driving_state": state,
+                "dangerous": is_dangerous,
             })
             results["counts"]["escooter"] += 1
+            if is_dangerous:
+                results["counts"]["escooter_dangerous"] += 1
+            else:
+                results["counts"]["escooter_normal"] += 1
             continue
 
         show, v = tr.update_score_and_state(abs_time)
@@ -899,12 +996,14 @@ def summarize_escooter_tracks(detections):
             "abs_times": [],
             "speeds": [],
             "positions": [],
+            "states": [],
         })
         info["frames"].append(det["frame_index"])
         info["rel_times"].append(det["rel_time"])
         info["abs_times"].append(det["abs_time"])
         info["speeds"].append(det["speed"])
         info["positions"].append(det["centroid"])
+        info["states"].append(det.get("driving_state", 'unknown'))
 
     summary = []
     for tid, info in by_track.items():
@@ -913,10 +1012,15 @@ def summarize_escooter_tracks(detections):
         abs_times = info["abs_times"]
         speeds = info["speeds"]
         pos = info["positions"]
+        states = info["states"]
 
         path_len = 0.0
         for (x1, z1), (x2, z2) in zip(pos, pos[1:]):
             path_len += math.hypot(x2 - x1, z2 - z1)
+
+        dangerous_count = sum(1 for s in states if s == 'dangerous')
+        dangerous = dangerous_count > 0
+        danger_ratio = (dangerous_count / len(states)) if states else 0.0
 
         summary.append({
             "track_id": tid,
@@ -934,6 +1038,9 @@ def summarize_escooter_tracks(detections):
             "path_length": path_len,
             "start_position": pos[0],
             "end_position": pos[-1],
+            "dangerous": dangerous,
+            "dangerous_ratio": danger_ratio,
+            "state": 'dangerous' if dangerous else 'normal',
         })
 
     summary.sort(key=lambda item: item["rel_start"])
@@ -961,6 +1068,8 @@ def analyze_scooter_csv(csv_file, verbose=True):
                 "speed": es["speed"],
                 "centroid": es["centroid"],
                 "features": es["features"],
+                "driving_state": es.get("driving_state", 'unknown'),
+                "dangerous": es.get("dangerous", False),
             })
 
     summary = summarize_escooter_tracks(detections)
@@ -971,10 +1080,11 @@ def analyze_scooter_csv(csv_file, verbose=True):
         else:
             print(f"{name}: 检测到 {len(summary)} 段 e-scooter 行驶。")
             for item in summary:
+                status = "危险驾驶" if item['dangerous'] else "正常行驶"
                 print(
                     f"  轨迹 #{item['track_id']:02d}: {item['rel_start']:.2f}s → {item['rel_end']:.2f}s "
                     f"(持续 {item['duration']:.2f}s, 样本 {item['num_detections']})，速度中位 {item['median_speed']:.2f} m/s，"
-                    f"距离约 {item['path_length']:.2f} m"
+                    f"最高 {item['max_speed']:.2f} m/s，距离约 {item['path_length']:.2f} m，{status}"
                 )
 
     return summary, detections
@@ -1046,9 +1156,10 @@ def run_viewer(csv_file):
         for es in results["escooters"]:
             feat = es["features"]
             obb = feat['obb']
+            color = ESCOOTER_DANGER_COLOR if es.get("dangerous") else ESCOOTER_COLOR
             segs = obb_corners_lines(obb['center'], obb['u'], obb['v'], obb['L'], obb['W'],
                                      feat['y_min'], feat['y_max'])
-            box = gl.GLLinePlotItem(pos=segs, mode='lines', color=ESCOOTER_COLOR,
+            box = gl.GLLinePlotItem(pos=segs, mode='lines', color=color,
                                     width=ESCOOTER_BOX_WIDTH, antialias=True)
             view.addItem(box); box_items.append(box)
 
@@ -1060,7 +1171,7 @@ def run_viewer(csv_file):
             pole_len = max(0.1, 0.05*L)
             pole_a = np.array([near_x, feat['y_min'], near_z])
             pole_b = np.array([near_x + pole_len*u[0], feat['y_min'], near_z + pole_len*u[1]])
-            pole_item = gl.GLLinePlotItem(pos=np.vstack([pole_a, pole_b]), mode='lines', color=ESCOOTER_COLOR,
+            pole_item = gl.GLLinePlotItem(pos=np.vstack([pole_a, pole_b]), mode='lines', color=color,
                                           width=ESCOOTER_BOX_WIDTH, antialias=True)
             view.addItem(pole_item); box_items.append(pole_item)
             sz = ESCOOTER_CFG['stand']; du = sz['length']*0.5; dv = sz['width']*0.5
@@ -1075,13 +1186,15 @@ def run_viewer(csv_file):
                     rect.append([x,y0,z])
             r0,r1,r2,r3 = rect
             rect_edges = np.vstack([r0,r1, r1,r3, r3,r2, r2,r0])
-            rect_item = gl.GLLinePlotItem(pos=rect_edges, mode='lines', color=ESCOOTER_COLOR, width=1, antialias=True)
+            rect_item = gl.GLLinePlotItem(pos=rect_edges, mode='lines', color=color, width=1, antialias=True)
             view.addItem(rect_item); box_items.append(rect_item)
             if HAS_GLTEXT and ESCOOTER_LABEL:
                 vtxt = es["speed"]
                 txtpos = (near_x, feat['y_max']+0.1, near_z)
-                txt = GLTextItem(pos=txtpos, text=f"E‑Scooter + Rider {vtxt:.2f} m/s",
-                                 color=QtGui.QColor(255,204,102), font=QtGui.QFont("Microsoft YaHei", 14))
+                text_color = QtGui.QColor(255,102,102) if es.get("dangerous") else QtGui.QColor(255,204,102)
+                status_cn = "危险驾驶" if es.get("dangerous") else "正常行驶"
+                txt = GLTextItem(pos=txtpos, text=f"E‑Scooter + Rider {vtxt:.2f} m/s {status_cn}",
+                                 color=text_color, font=QtGui.QFont("Microsoft YaHei", 14))
                 view.addItem(txt); text_items.append(txt)
 
         for ped in results["people"]:
@@ -1095,8 +1208,11 @@ def run_viewer(csv_file):
                                  color=QtGui.QColor(0,255,0), font=QtGui.QFont("Microsoft YaHei", 14))
                 view.addItem(txt); text_items.append(txt)
 
+        danger_cnt = counts.get("escooter_dangerous", 0)
+        normal_cnt = counts.get("escooter_normal", 0)
         view.setWindowTitle(
-            f'Radar 3D: {rel_t[idx]:.3f} s  行人:{counts["ped"]}  物体:{counts["obj"]}  滑板车+人:{counts["escooter"]}  gate={assoc_gate:.2f} m'
+            f'Radar 3D: {rel_t[idx]:.3f} s  行人:{counts["ped"]}  物体:{counts["obj"]}  '
+            f'滑板车+人:{counts["escooter"]} (正常:{normal_cnt} 危险:{danger_cnt})  gate={assoc_gate:.2f} m'
         )
 
     timer.timeout.connect(update)
