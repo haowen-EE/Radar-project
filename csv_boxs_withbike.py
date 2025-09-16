@@ -1,0 +1,913 @@
+# -*- coding: utf-8 -*-
+"""
+Radar 3D viewer with People / Object / E‑Scooter+Rider
+- DBSCAN clustering (distance-adaptive)
+- E‑Scooter distance-adaptive gates + cold-start fast confirm (+ speed & d_near relax at high speed)
+- Predictive association + keep-alive
+Design refs: escooter_rider_config.json / readme
+"""
+
+import csv, math, os
+from collections import defaultdict, deque
+from datetime import datetime
+import numpy as np
+from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
+import pyqtgraph.opengl as gl
+
+# ================= 基本配置 =================
+
+CSV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'escooter_fast_without_RSC.csv')
+
+ROTATE_Y_PLUS_90_FOR_X_ALIGNED_WALK = False
+
+# ---- 聚类：默认使用 DBSCAN（更稳），可切回栅格 ----
+USE_DBSCAN = True
+DBSCAN_EPS_BASE = 0.50             # 近距基线 eps
+DBSCAN_EPS_MIN  = 0.35
+DBSCAN_EPS_MAX  = 0.70
+DBSCAN_EPS_SLOPE_PER_M = 0.02      # 距离每 +1m，eps +0.02
+DBSCAN_MIN_SAMPLES = 3             # RSC=ON：3 起
+# 栅格聚类（备用）
+GRID_CELL_M = 0.6
+MIN_POINTS_IN_CLUSTER = 2          # RSC 下有时只打到 2~3 个点
+ASSOC_GATE_BASE_M = 2.4
+MAX_MISS = 8
+
+# ---- 速度与稳定性 ----
+ROLL_WIN = 40
+EWMA_ALPHA = 0.35
+SPEED_WIN_PAIR = 10
+SPEED_SANITY_MAX = 9.0
+DISP_FACTOR = 1.25
+
+# ---- 行人判定（保持原始，不做抑制，确保能识别） ----
+WALK_SPEED_LO = 0.3
+WALK_SPEED_HI = 7.0
+MIN_DURATION_S = 0.5
+Y_EXTENT_MIN = 0.35
+CONFIRM_SCORE = 3
+SCORE_HIT = 2
+SCORE_MISS = 1
+LATCH_S = 1.0
+
+# === Object（静小物体） ===
+OBJ_SPEED_MAX = 0.20
+OBJ_MIN_DURATION_S = 0.5
+OBJ_MAX_POINTS = 15
+OBJ_MAX_VOL = 0.50
+OBJ_MAX_Y_EXTENT = 1.00
+OBJ_ASSOC_GATE = 0.55
+OBJ_CONFIRM_SCORE = 3
+OBJ_SCORE_HIT = 2
+OBJ_SCORE_MISS = 1
+OBJ_LATCH_S = 1.2
+
+# 近邻分裂 + 保护圈
+OBJ_EXCLUDE_R = 0.50
+OBJ_OCCLU_HOLD_S = 0.6
+OBJ_OCCLU_MISS_RELIEF = 1
+
+# 绘制
+POINT_SIZE = 3
+PT_COLOR = (1, 0, 0, 1)
+BOX_COLOR = (0, 1, 0, 1)
+BOX_WIDTH = 2
+LABEL_SPEED = True
+OBJ_BOX_COLOR = (0, 0.6, 1, 1)
+OBJ_BOX_WIDTH = 2
+LABEL_OBJECT = True
+
+# === E‑Scooter + Rider（核心） ===
+ESCOOTER_CFG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 'escooter_rider_config.json')
+
+# 缺省门限（无 JSON 时使用；与文档一致）
+ESCOOTER_SHAPE_GATE = dict(L_min=1.0, L_max=1.6, W_min=0.20, W_max=0.80, axis_ratio_min=1.8)
+ESCOOTER_DNEAR_RANGE = (0.16, 0.56)     # 典型
+ESCOOTER_SPEED_MEAN_MIN = 1.5
+ESCOOTER_VP90_MIN = 3.0
+ESCOOTER_NPTS_RANGE_RSC = (2, 18)       # 放宽 RSC 下点数
+
+# 距离自适应（>3m：W_max 放宽、L_min/AR_min 下调；设封顶/地板）
+ESCOOTER_RANGE_REF_M   = 3.0
+ESCOOTER_WMAX_SLOPE    = 0.08           # 每米 +0.08
+ESCOOTER_LMIN_SLOPE    = 0.10           # 每米 −0.10
+ESCOOTER_ARMIN_SLOPE   = 0.18           # 每米 −0.18
+ESCOOTER_WMAX_ABS      = 1.00
+ESCOOTER_LMIN_FLOOR    = 0.75
+ESCOOTER_ARMIN_FLOOR   = 1.50
+
+# 高速补偿（放宽 d_near）
+ESCOOTER_FAST_SPEED        = 5.0
+ESCOOTER_DNEAR_PAD_FAST_LO = 0.10
+ESCOOTER_DNEAR_PAD_FAST_HI = 0.18
+
+# 冷启动与快速确认（首 0.8s：形状+点数+速度≥4.0 即可先确认；无需 d_near）
+SCOOTER_SPEED_SKIP_FRAMES      = 3
+SCOOTER_FAST_CONFIRM_SPEED     = 4.0
+SCOOTER_FAST_CONFIRM_MAX_AGE_S = 0.8
+
+# 预测关联
+PRED_GATE_BASE             = 0.4
+PRED_GATE_EXTRA_PER_MS     = 0.0025
+PRED_GATE_MAX_EXTRA        = 5.0
+
+# E‑Scooter 显示 & 保活
+ESCOOTER_KEEPALIVE_S       = 0.5
+ESCOOTER_SCORE_HIT = 2
+ESCOOTER_SCORE_MISS = 1
+ESCOOTER_CONFIRM_SCORE = 3
+ESCOOTER_LATCH_S = 1.0
+ESCOOTER_COLOR = (1.0, 0.8, 0.2, 1.0)
+ESCOOTER_BOX_WIDTH = 2
+ESCOOTER_LABEL = True
+
+def load_escooter_cfg(path=ESCOOTER_CFG_PATH):
+    import json
+    cfg = dict(shape=ESCOOTER_SHAPE_GATE.copy(),
+               dnear=ESCOOTER_DNEAR_RANGE,
+               speed=(ESCOOTER_SPEED_MEAN_MIN, ESCOOTER_VP90_MIN),
+               stand=dict(center_from_pole=0.365, length=0.73, width=0.23))
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            j = json.load(f)
+        g = j.get('features_and_gates', {})
+        s = g.get('obb_shape_gate', {})
+        cfg['shape'].update(dict(
+            L_min=s.get('L_min', cfg['shape']['L_min']),
+            L_max=s.get('L_max', cfg['shape']['L_max']),
+            W_min=s.get('W_min', cfg['shape']['W_min']),
+            W_max=s.get('W_max', cfg['shape']['W_max']),
+            axis_ratio_min=s.get('axis_ratio_min', cfg['shape']['axis_ratio_min'])
+        ))
+        d = g.get('human_position_gate', {})
+        rng = d.get('d_near_range', list(cfg['dnear']))
+        cfg['dnear'] = (float(rng[0]), float(rng[1]))
+        sp = g.get('speed_gate', {})
+        cfg['speed'] = (sp.get('mean_speed_min', cfg['speed'][0]),
+                        sp.get('vp90_min', cfg['speed'][1]))
+        geom = j.get('geometry', {})
+        stand = geom.get('stand_zone', {})
+        if stand:
+            cfg['stand'] = dict(
+                center_from_pole=stand.get('center_from_pole', cfg['stand']['center_from_pole']),
+                length=stand.get('length', cfg['stand']['length']),
+                width=stand.get('width', cfg['stand']['width'])
+            )
+    except Exception:
+        pass
+    return cfg
+
+ESCOOTER_CFG = load_escooter_cfg()   # 取自你的 JSON/README（门限/几何/流程）  # ← 参考文档
+# （参考：DBSCAN 参数、OBB 门限、d_near 解释与调参要点）  # see project docs
+
+try:
+    from pyqtgraph.opengl import GLTextItem
+    HAS_GLTEXT = True
+except Exception:
+    HAS_GLTEXT = False
+
+# === 方框稳定化 ===
+BOX_SIZE_MODE = 'fixed'
+BOX_FIXED_WHD = (0.6, 1.7, 0.6)
+BOX_SMOOTH_ALPHA = 0.25
+BOX_DELTA_CLAMP = 0.12
+BOX_SIZE_MIN = (0.4, 1.4, 0.4)
+BOX_SIZE_MAX = (0.9, 2.0, 0.9)
+BOX_ANCHOR = 'center'
+BOX_PAD = 0.02
+BOX_SIZE_MIN_ARR = np.array(BOX_SIZE_MIN, float)
+BOX_SIZE_MAX_ARR = np.array(BOX_SIZE_MAX, float)
+
+# ================= 工具函数 =================
+
+def transform_xyz(x, y, z):
+    return (z, y, -x) if ROTATE_Y_PLUS_90_FOR_X_ALIGNED_WALK else (x, y, z)
+
+def _parse_time(ts):
+    if not ts: return None
+    try:
+        return datetime.fromisoformat(ts)
+    except Exception:
+        try:
+            if ts.endswith('Z'):  # 兼容 ISOZ
+                return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+        except Exception:
+            return None
+    return None
+
+def load_frames(csv_file):
+    """按 detIdx==0 分帧，返回 data, frames, rel_t, abs_t, dt_med"""
+    data, time_map, fid = {}, {}, -1
+    with open(csv_file, 'r', newline='') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            det_idx = int(row.get('detIdx', 0) or 0)
+            if det_idx == 0:
+                fid += 1
+                data[fid] = []
+                ts = _parse_time(row.get('timeStamp'))
+                if ts: time_map[fid] = ts
+            try:
+                x, y, z = float(row['x']), float(row['y']), float(row['z'])
+                if fid >= 0:
+                    data[fid].append(transform_xyz(x, y, z))
+            except Exception:
+                continue
+    frames = sorted(data.keys())
+    if not frames: raise RuntimeError('No frames parsed from CSV')
+
+    # 帧间隔估计
+    times = [time_map.get(fid) for fid in frames]
+    ts_valid = [t for t in times if isinstance(t, datetime)]
+    if len(ts_valid) >= 3:
+        t0 = ts_valid[0]
+        secs = np.array([(t - t0).total_seconds() for t in ts_valid], float)
+        dts = np.diff(secs); dts = dts[dts > 0]
+        dt_med = float(np.median(dts)) if dts.size else 0.05
+    else:
+        dt_med = 0.05
+
+    rel_t = np.cumsum([0.0] + [dt_med]*(len(frames)-1)).astype(float)
+
+    if ts_valid:
+        base = ts_valid[0]
+        abs_list = []
+        for i, fid in enumerate(frames):
+            t = time_map.get(fid)
+            abs_list.append((t - base).total_seconds() if isinstance(t, datetime) else float(rel_t[i]))
+        abs_t = np.array(abs_list, float)
+    else:
+        abs_t = rel_t.copy()
+    return data, frames, rel_t, abs_t, dt_med
+
+# ---- DBSCAN（自实现，基于 XZ 平面） ----
+def _dbscan_region(XZ, i, eps2):
+    diff = XZ - XZ[i]
+    d2 = (diff[:,0]**2 + diff[:,1]**2)
+    return np.flatnonzero(d2 <= eps2)
+
+def dbscan_cluster(pts, eps=0.5, min_samples=3):
+    if len(pts) == 0:
+        return []
+    P = np.asarray(pts, float)
+    XZ = P[:, [0, 2]]
+    N = XZ.shape[0]
+    visited = np.zeros(N, dtype=bool)
+    labels = -np.zeros(N, dtype=int) - 1  # -1 未标注
+    cid = 0
+    eps2 = float(eps*eps)
+    for i in range(N):
+        if visited[i]: continue
+        visited[i] = True
+        neigh = _dbscan_region(XZ, i, eps2)
+        if neigh.size < min_samples:
+            continue
+        labels[i] = cid
+        seed = list(neigh.tolist())
+        k = 0
+        while k < len(seed):
+            j = seed[k]; k += 1
+            if not visited[j]:
+                visited[j] = True
+                neigh_j = _dbscan_region(XZ, j, eps2)
+                if neigh_j.size >= min_samples:
+                    seed.extend([int(t) for t in neigh_j.tolist() if t not in seed])
+            if labels[j] == -1:
+                labels[j] = cid
+        cid += 1
+
+    clusters = []
+    for lab in range(cid):
+        idxs = np.flatnonzero(labels == lab)
+        if idxs.size < min_samples:
+            continue
+        cpts = P[idxs]
+        xmin = float(cpts[:, 0].min()); xmax = float(cpts[:, 0].max())
+        ymin = float(cpts[:, 1].min()); ymax = float(cpts[:, 1].max())
+        zmin = float(cpts[:, 2].min()); zmax = float(cpts[:, 2].max())
+        cxz = cpts[:, [0, 2]].mean(axis=0)
+        clusters.append({
+            "idxs": idxs.astype(int),
+            "pts": cpts,
+            "centroid_xz": cxz,
+            "bbox": (xmin, xmax, ymin, ymax, zmin, zmax)
+        })
+    return clusters
+
+# ---- 栅格聚类（备用） ----
+def grid_cluster(pts, cell=GRID_CELL_M, min_points=MIN_POINTS_IN_CLUSTER):
+    if len(pts) == 0:
+        return []
+    P = np.asarray(pts)
+    x = P[:, 0]; z = P[:, 2]
+    off = 1000.0 * cell
+    ix = np.floor((x + off) / cell).astype(np.int64)
+    iz = np.floor((z + off) / cell).astype(np.int64)
+    cell_map = defaultdict(list)
+    for i, (cx, cz) in enumerate(zip(ix, iz)):
+        cell_map[(cx, cz)].append(i)
+
+    vis, clusters = set(), []
+    from collections import deque as dq
+    for key in list(cell_map.keys()):
+        if key in vis: continue
+        q = dq([key]); vis.add(key); comp = []
+        while q:
+            c = q.popleft(); comp.append(c); cx, cz = c
+            for dx in (-1,0,1):
+                for dz in (-1,0,1):
+                    if dx==0 and dz==0: continue
+                    n = (cx+dx, cz+dz)
+                    if n in cell_map and n not in vis:
+                        vis.add(n); q.append(n)
+        idxs = []
+        for c in comp: idxs.extend(cell_map[c])
+        if len(idxs) >= min_points:
+            cpts = P[idxs]
+            xmin = float(cpts[:, 0].min()); xmax = float(cpts[:, 0].max())
+            ymin = float(cpts[:, 1].min()); ymax = float(cpts[:, 1].max())
+            zmin = float(cpts[:, 2].min()); zmax = float(cpts[:, 2].max())
+            cxz = cpts[:, [0, 2]].mean(axis=0)
+            clusters.append({"idxs": np.array(idxs, int),
+                             "pts": cpts,
+                             "centroid_xz": cxz,
+                             "bbox": (xmin, xmax, ymin, ymax, zmin, zmax)})
+    return clusters
+
+def cluster_frame(pts):
+    if not USE_DBSCAN:
+        return grid_cluster(pts)
+    P = np.asarray(pts, float)
+    if P.shape[0] == 0:
+        return []
+    # 按距离自适应 eps
+    rng = np.hypot(P[:,0], P[:,2])
+    r_med = float(np.median(rng))
+    eps = DBSCAN_EPS_BASE + DBSCAN_EPS_SLOPE_PER_M * max(0.0, r_med - 3.0)
+    eps = float(min(max(eps, DBSCAN_EPS_MIN), DBSCAN_EPS_MAX))
+    return dbscan_cluster(P, eps=eps, min_samples=DBSCAN_MIN_SAMPLES)
+
+def make_bbox_lines(xmin, xmax, ymin, ymax, zmin, zmax):
+    c000 = np.array([xmin, ymin, zmin]); c100 = np.array([xmax, ymin, zmin])
+    c010 = np.array([xmin, ymax, zmin]); c110 = np.array([xmax, ymax, zmin])
+    c001 = np.array([xmin, ymin, zmax]); c101 = np.array([xmax, ymin, zmax])
+    c011 = np.array([xmin, ymax, zmax]); c111 = np.array([xmax, ymax, zmax])
+    edges = [
+        (c000, c100), (c100, c110), (c110, c010), (c010, c000),
+        (c001, c101), (c101, c111), (c111, c011), (c011, c001),
+        (c000, c001), (c100, c101), (c110, c111), (c010, c011)
+    ]
+    return np.vstack([np.vstack(e) for e in edges])
+
+# === Object：尺寸判定 ===
+def bbox_dims(bbox):
+    xmin, xmax, ymin, ymax, zmin, zmax = bbox
+    w = max(0.0, xmax - xmin); h = max(0.0, ymax - ymin); d = max(0.0, zmax - zmin)
+    return w, h, d
+
+def is_small_object(bbox, npts):
+    w, h, d = bbox_dims(bbox)
+    vol = w * h * d
+    small_by_geom = (vol <= OBJ_MAX_VOL and h <= OBJ_MAX_Y_EXTENT) or (max(w, d) <= 0.80 and h <= 1.0)
+    small_by_pts = (npts <= OBJ_MAX_POINTS)
+    return small_by_geom and small_by_pts
+
+def small_object_with_margin(bbox, npts, k_size=1.6, k_pts=1.8):
+    w, h, d = bbox_dims(bbox)
+    vol = w * h * d
+    small_by_geom = (vol <= OBJ_MAX_VOL * k_size and h <= OBJ_MAX_Y_EXTENT * k_size)
+    small_by_pts = (npts <= int(OBJ_MAX_POINTS * k_pts))
+    return small_by_geom and small_by_pts
+
+def split_cluster_near_object(cluster, obj_cx, obj_cz, radius=OBJ_EXCLUDE_R):
+    pts = cluster["pts"]
+    if pts.shape[0] < 6: return False, None, None
+    xz = pts[:, [0, 2]]
+    d = np.hypot(xz[:, 0] - obj_cx, xz[:, 1] - obj_cz)
+    mask_in = d <= radius
+    n_in = int(mask_in.sum()); n_out = int((~mask_in).sum())
+    if n_in < 3 or n_out < 3: return False, None, None
+
+    def mk(cpts, idxs):
+        xmin = float(cpts[:, 0].min()); xmax = float(cpts[:, 0].max())
+        ymin = float(cpts[:, 1].min()); ymax = float(cpts[:, 1].max())
+        zmin = float(cpts[:, 2].min()); zmax = float(cpts[:, 2].max())
+        cxz = cpts[:, [0, 2]].mean(axis=0)
+        return {"idxs": idxs.copy(), "pts": cpts.copy(), "centroid_xz": cxz,
+                "bbox": (xmin, xmax, ymin, ymax, zmin, zmax)}
+
+    sub_in = mk(pts[mask_in], cluster["idxs"][mask_in])
+    sub_out = mk(pts[~mask_in], cluster["idxs"][~mask_in])
+    if not is_small_object(sub_in["bbox"], sub_in["pts"].shape[0]): return False, None, None
+    return True, sub_in, sub_out
+
+# === E‑Scooter：几何（XZ PCA‑OBB） ===
+def pca_obb_xz(pts):
+    if pts.shape[0] < 3: return None
+    XZ = pts[:, [0, 2]].astype(float)
+    ctr = XZ.mean(axis=0)
+    X = XZ - ctr
+    U, S, Vt = np.linalg.svd(X, full_matrices=False)
+    u = Vt[0]; v = Vt[1]
+    if np.linalg.det(np.vstack([u, v])) < 0: v = -v
+    pu = X @ u; pv = X @ v
+    L = float(pu.max() - pu.min())
+    W = float(pv.max() - pv.min())
+    u_min = float(pu.min()); u_max = float(pu.max())
+    return dict(center=ctr, u=u, v=v, L=L, W=W, proj_u=pu, u_rng=(u_min, u_max))
+
+def obb_corners_lines(center, u, v, L, W, y_min, y_max):
+    cx, cz = center; ux, uz = u; vx, vz = v
+    du = L * 0.5; dv = W * 0.5
+    P = []
+    for su in (-1, 1):
+        for sv in (-1, 1):
+            x = cx + su*du*ux + sv*dv*vx
+            z = cz + su*du*uz + sv*dv*vz
+            P.append([x, y_min, z])
+    P += [[p[0], y_max, p[2]] for p in P[:4]]
+    p0,p1,p2,p3,p4,p5,p6,p7 = P
+    edges = [
+        (p0,p1),(p1,p3),(p3,p2),(p2,p0),
+        (p4,p5),(p5,p7),(p7,p6),(p6,p4),
+        (p0,p4),(p1,p5),(p2,p6),(p3,p7)
+    ]
+    return np.vstack([np.vstack(e) for e in edges])
+
+def dominant_peak(val, bins=None):
+    if val.size < 3: return float(np.median(val))
+    if bins is None: bins = max(8, int(np.sqrt(val.size)))
+    hist, edges = np.histogram(val, bins=bins)
+    k = int(np.argmax(hist))
+    return float(0.5*(edges[k] + edges[k+1]))
+
+def adapt_scooter_shape_gate_by_range(base_shape, r):
+    dr = max(0.0, r - ESCOOTER_RANGE_REF_M)
+    W_max = min(base_shape['W_max'] + ESCOOTER_WMAX_SLOPE*dr, ESCOOTER_WMAX_ABS)
+    L_min = max(ESCOOTER_LMIN_FLOOR, base_shape['L_min'] - ESCOOTER_LMIN_SLOPE*dr)
+    AR_min = max(ESCOOTER_ARMIN_FLOOR, base_shape['axis_ratio_min'] - ESCOOTER_ARMIN_SLOPE*dr)
+    return dict(L_min=L_min, L_max=base_shape['L_max'], W_min=base_shape['W_min'],
+                W_max=W_max, axis_ratio_min=AR_min)
+
+# ================= 轨迹类 =================
+
+class Track:
+    _next = 1
+
+    def __init__(self, cx, cz, t, yext, bbox=None, frame_idx=0, npts=0, pts=None):
+        self.id = Track._next; Track._next += 1
+        self.c_smooth = np.array([cx, cz], float)
+        self.centroids = deque(maxlen=ROLL_WIN)
+        self.times = deque(maxlen=ROLL_WIN)
+        self.frames = deque(maxlen=ROLL_WIN)
+        self.y_exts = deque(maxlen=ROLL_WIN)
+        self.miss = 0
+        self.score = 0
+        self.confirmed = False
+        self.latch_until = 0.0
+        self.last_bbox = bbox
+        self.yc_smooth = None
+        self.y_base_smooth = None
+        self.size = None
+
+        # Object
+        self.last_npts = int(npts) if npts else 0
+        self.obj_score = 0
+        self.obj_confirmed = False
+        self.obj_latch_until = 0.0
+
+        # 速度样本（vp90）
+        self.speeds = deque(maxlen=ROLL_WIN)
+
+        # E‑Scooter
+        self.last_pts = pts
+        self.escooter_score = 0
+        self.escooter_confirmed = False
+        self.escooter_latch_until = 0.0
+
+        # 类别锁
+        self.lock_type = None   # None | 'object' | 'escooter'
+
+        self.add(cx, cz, t, yext, bbox=bbox, frame_idx=frame_idx, npts=npts, pts=pts)
+
+    def add(self, cx, cz, t, yext, bbox=None, frame_idx=None, npts=None, pts=None):
+        prev = np.array(self.centroids[-1]) if len(self.centroids)>0 else None
+        prev_t = float(self.times[-1]) if len(self.times)>0 else None
+
+        self.c_smooth = (1 - EWMA_ALPHA) * self.c_smooth + EWMA_ALPHA * np.array([cx, cz], float)
+        self.centroids.append((cx, cz))
+        self.times.append(float(t))
+        if frame_idx is not None: self.frames.append(int(frame_idx))
+        self.y_exts.append(float(yext))
+
+        # 速度样本
+        if (prev is not None) and (prev_t is not None) and (t > prev_t):
+            dt = float(t - prev_t)
+            v = float(np.hypot(cx - prev[0], cz - prev[1]) / max(1e-6, dt))
+            if np.isfinite(v): self.speeds.append(v)
+
+        if bbox is not None:
+            self.last_bbox = bbox
+            xmin, xmax, ymin, ymax, zmin, zmax = bbox
+            yc = 0.5 * (ymin + ymax)
+            self.yc_smooth = yc if self.yc_smooth is None else (1 - BOX_SMOOTH_ALPHA) * self.yc_smooth + BOX_SMOOTH_ALPHA * yc
+            self.y_base_smooth = ymin if self.y_base_smooth is None else (1 - BOX_SMOOTH_ALPHA) * self.y_base_smooth + BOX_SMOOTH_ALPHA * ymin
+            obs_size = np.array([xmax - xmin, ymax - ymin, zmax - zmin], float)
+            self._update_size(obs_size)
+        if npts is not None: self.last_npts = int(npts)
+        if pts is not None and isinstance(pts, np.ndarray) and pts.shape[1] >= 3:
+            self.last_pts = pts.copy()
+
+        self.miss = 0
+
+    def last(self): return tuple(self.c_smooth.tolist())
+    def last_frame(self): return self.frames[-1] if len(self.frames) > 0 else -1
+    def duration(self):
+        if len(self.times) < 2: return 0.0
+        return self.times[-1] - self.times[0]
+    def y_med(self): return float(np.median(self.y_exts)) if self.y_exts else 0.0
+
+    def speed_robust(self):
+        n = len(self.times)
+        if n < 2: return 0.0
+        k = min(n - 1, SPEED_WIN_PAIR)
+        if k <= 0: return 0.0
+        Cs = np.array(list(self.centroids)[-k - 1:], float)
+        for i in range(1, Cs.shape[0]): Cs[i] = (1 - EWMA_ALPHA) * Cs[i - 1] + EWMA_ALPHA * Cs[i]
+        Ts = np.array(list(self.times)[-k - 1:], float)
+        dx = np.diff(Cs[:, 0]); dz = np.diff(Cs[:, 1]); dt = np.diff(Ts)
+        mask = dt > 0
+        if not np.any(mask): return 0.0
+        dx = dx[mask]; dz = dz[mask]; dt = dt[mask]
+        disp = np.hypot(dx, dz); inst = disp / dt
+        ok = (inst <= SPEED_SANITY_MAX) & (disp <= SPEED_SANITY_MAX * dt * DISP_FACTOR)
+        good = inst[ok]
+        if good.size == 0: return float(np.median(inst)) if inst.size else 0.0
+        return float(np.median(good))
+
+    def vp90(self):
+        if len(self.speeds) < 5: return None
+        return float(np.percentile(np.array(self.speeds), 90.0))
+
+    # 常速度外推（关联预测）
+    def predict_pos(self, t_now):
+        if len(self.centroids) < 2: return self.c_smooth[0], self.c_smooth[1]
+        (x2, z2) = self.centroids[-1]; (x1, z1) = self.centroids[-2]
+        t2 = float(self.times[-1]); t1 = float(self.times[-2])
+        dt = max(1e-6, t2 - t1)
+        vx = (x2 - x1) / dt; vz = (z2 - z1) / dt
+        dt_pred = float(t_now - t2)
+        return x2 + vx * dt_pred, z2 + vz * dt_pred
+
+    # 行人判定：恢复“原生逻辑”，不再做形状/速度抑制，确保行人能出
+    def update_score_and_state(self, now):
+        if self.lock_type in ('object', 'escooter'):
+            return False, self.speed_robust()
+        dur = self.duration(); v = self.speed_robust(); ymed = self.y_med()
+        ok = (dur >= MIN_DURATION_S) and (WALK_SPEED_LO <= v <= WALK_SPEED_HI) and (ymed >= Y_EXTENT_MIN)
+        self.score = min(self.score + SCORE_HIT, 10) if ok else max(self.score - SCORE_MISS, 0)
+        if (not self.confirmed) and self.score >= CONFIRM_SCORE:
+            self.confirmed = True; self.latch_until = now + LATCH_S
+        if self.confirmed and self.score > 0:
+            self.latch_until = max(self.latch_until, now + 0.2)
+        show = self.confirmed and (now <= self.latch_until)
+        return show, v
+
+    # 显示方框
+    def _update_size(self, obs_size: np.ndarray):
+        mode = BOX_SIZE_MODE
+        if mode == 'fixed' or obs_size is None:
+            self.size = np.array(BOX_FIXED_WHD, float); return
+        if mode == 'raw':
+            self.size = np.clip(obs_size, BOX_SIZE_MIN_ARR, BOX_SIZE_MAX_ARR); return
+        if self.size is None:
+            seed = np.clip(obs_size, BOX_SIZE_MIN_ARR, BOX_SIZE_MAX_ARR)
+            base = np.array(BOX_FIXED_WHD, float)
+            self.size = 0.5 * base + 0.5 * seed
+        else:
+            prev = self.size
+            target = np.clip(obs_size, BOX_SIZE_MIN_ARR, BOX_SIZE_MAX_ARR)
+            up = prev * (1.0 + BOX_DELTA_CLAMP); dn = prev * (1.0 - BOX_DELTA_CLAMP)
+            target = np.minimum(np.maximum(target, dn), up)
+            self.size = (1.0 - BOX_SMOOTH_ALPHA) * prev + BOX_SMOOTH_ALPHA * target
+
+    def display_bbox(self):
+        if self.size is None: self.size = np.array(BOX_FIXED_WHD, float)
+        w, h, d = self.size; cx, cz = self.c_smooth; pad = float(BOX_PAD)
+        yc = self.yc_smooth if self.yc_smooth is not None else 0.5 * h
+        ymin = (yc - 0.5 * h) - pad; ymax = (yc + 0.5 * h) + pad
+        xmin = (cx - 0.5 * w) - pad; xmax = (cx + 0.5 * w) + pad
+        zmin = (cz - 0.5 * d) - pad; zmax = (cz + 0.5 * d) + pad
+        return xmin, xmax, ymin, ymax, zmin, zmax
+
+    # === Object ===
+    def small_like(self):
+        if self.last_bbox is None: return False
+        return is_small_object(self.last_bbox, self.last_npts)
+
+    def is_objectish(self):
+        v = self.speed_robust(); short_hist = (len(self.times) < 6)
+        return (self.small_like() and (v <= OBJ_SPEED_MAX * 1.5 or short_hist))
+
+    def update_object_state(self, now):
+        dur = self.duration(); v = self.speed_robust()
+        cond = (dur >= OBJ_MIN_DURATION_S) and (v <= OBJ_SPEED_MAX) and self.small_like()
+        self.obj_score = min(self.obj_score + OBJ_SCORE_HIT, 10) if cond else max(self.obj_score - OBJ_SCORE_MISS, 0)
+        if (not self.obj_confirmed) and self.obj_score >= OBJ_CONFIRM_SCORE:
+            self.obj_confirmed = True; self.obj_latch_until = now + OBJ_LATCH_S; self.lock_type = 'object'
+        if self.obj_confirmed and self.obj_score > 0:
+            self.obj_latch_until = max(self.obj_latch_until, now + 0.2)
+        return self.obj_confirmed and (now <= self.obj_latch_until)
+
+    # === E‑Scooter 特征/判定 ===
+    def escooter_features(self):
+        if self.last_pts is None or self.last_bbox is None: return None
+        obb = pca_obb_xz(self.last_pts)
+        if obb is None: return None
+        xmin,xmax,ymin,ymax,zmin,zmax = self.last_bbox
+        u_peak = dominant_peak(obb['proj_u'])
+        u_min, u_max = obb['u_rng']
+        d_near = float(min(abs(u_peak - u_min), abs(u_max - u_peak)))
+        return dict(obb=obb, y_min=ymin, y_max=ymax, u_peak=u_peak,
+                    d_near=d_near, npts=int(self.last_npts))
+
+    def update_escooter_state(self, now, cfg):
+        feat = self.escooter_features()
+        if feat is None:
+            self.escooter_score = max(self.escooter_score - ESCOOTER_SCORE_MISS, 0)
+            return False, None
+
+        # 距离自适应形状门限
+        r = float(np.hypot(self.c_smooth[0], self.c_smooth[1]))
+        sh = adapt_scooter_shape_gate_by_range(cfg['shape'], r)
+
+        L,W = feat['obb']['L'], feat['obb']['W']
+        AR = float(max(L,W)/max(1e-6, min(L,W)))
+        dnear_lo, dnear_hi = cfg['dnear']
+
+        v_mean = self.speed_robust()
+        if v_mean >= ESCOOTER_FAST_SPEED:  # 高速补偿：放宽 d_near
+            dnear_lo = max(0.0, dnear_lo - ESCOOTER_DNEAR_PAD_FAST_LO)
+            dnear_hi =         dnear_hi + ESCOOTER_DNEAR_PAD_FAST_HI
+
+        # 形状/点数门限
+        shape_ok = (sh['L_min'] <= L <= sh['L_max']) and (sh['W_min'] <= W <= sh['W_max']) and (AR >= sh['axis_ratio_min'])
+        n_ok     = (ESCOOTER_NPTS_RANGE_RSC[0] <= feat['npts'] <= ESCOOTER_NPTS_RANGE_RSC[1])
+        # 人位置信号
+        near_ok  = (dnear_lo <= feat['d_near'] <= dnear_hi)
+
+        # 冷启动速度豁免
+        samples = len(self.speeds)
+        if samples < SCOOTER_SPEED_SKIP_FRAMES:
+            sp_ok = True
+        else:
+            v90 = self.vp90()
+            sp_ok = (v_mean >= ESCOOTER_CFG['speed'][0]) and (True if v90 is None else (v90 >= ESCOOTER_CFG['speed'][1]))
+
+        ok = shape_ok and n_ok and near_ok and sp_ok
+
+        # —— 首 0.8 s 快速确认：形状+点数+速度≥4.0 即先确认（无需 d_near）——
+        if (not self.escooter_confirmed) and (self.duration() <= SCOOTER_FAST_CONFIRM_MAX_AGE_S) \
+           and shape_ok and n_ok and (v_mean >= SCOOTER_FAST_CONFIRM_SPEED):
+            self.escooter_confirmed = True
+            self.lock_type = 'escooter'
+            self.escooter_score = max(self.escooter_score, ESCOOTER_CONFIRM_SCORE)
+            self.escooter_latch_until = now + ESCOOTER_LATCH_S
+
+        # 常规积分/衰减
+        self.escooter_score = min(self.escooter_score + ESCOOTER_SCORE_HIT, 10) if ok \
+                              else max(self.escooter_score - ESCOOTER_SCORE_MISS, 0)
+
+        if (not self.escooter_confirmed) and self.escooter_score >= ESCOOTER_CONFIRM_SCORE:
+            self.escooter_confirmed = True
+            self.escooter_latch_until = now + ESCOOTER_LATCH_S
+            self.lock_type = 'escooter'
+
+        # 保活（防“只闪一帧”）
+        if self.escooter_confirmed:
+            self.escooter_latch_until = max(self.escooter_latch_until, now + ESCOOTER_KEEPALIVE_S)
+
+        show = self.escooter_confirmed and (now <= self.escooter_latch_until)
+        return (show, feat) if show else (False, feat)
+
+# ================= 主循环 =================
+
+def main():
+    data, frames, rel_t, abs_t, dt_med = load_frames(CSV_FILE)
+    total_time = rel_t[-1] if len(rel_t) else 0.0
+    assoc_gate = max(ASSOC_GATE_BASE_M, SPEED_SANITY_MAX * dt_med * 2.0)
+
+    app = QtWidgets.QApplication([])
+    view = gl.GLViewWidget()
+    view.opts['distance'] = 20
+    view.setCameraPosition(azimuth=45, elevation=20, distance=20)
+    view.setWindowTitle(f'Radar 3D (Scooter+Rider & People): 0.000 s [{os.path.basename(CSV_FILE)}]')
+    view.show()
+    axis = gl.GLAxisItem(); axis.setSize(x=10, y=10, z=10); view.addItem(axis)
+    grid = gl.GLGridItem(); grid.setSize(10, 10); grid.setSpacing(1, 1); view.addItem(grid)
+    scatter = gl.GLScatterPlotItem(size=POINT_SIZE, color=PT_COLOR); view.addItem(scatter)
+
+    box_items, text_items = [], []
+    tracks = []
+
+    timer = QtCore.QTimer()
+    timer.setInterval(max(int(dt_med * 1000), 20))
+    elapsed = QtCore.QElapsedTimer(); elapsed.start()
+    idx = 0
+
+    def clear_tracks():
+        nonlocal tracks
+        tracks.clear()
+        Track._next = 1
+
+    def update():
+        nonlocal idx, box_items, text_items, tracks
+        sec = elapsed.elapsed() / 1000.0
+        if total_time > 0 and sec > total_time:
+            elapsed.restart(); idx = 0; sec = 0.0; clear_tracks()
+
+        while idx < len(frames) - 1 and sec >= rel_t[idx + 1]:
+            idx += 1
+
+        pts = np.array(data[frames[idx]], float) if data[frames[idx]] else np.zeros((0, 3))
+        scatter.setData(pos=pts)
+
+        # 清除上一帧图元
+        for it in box_items: view.removeItem(it)
+        box_items = []
+        for it in text_items: view.removeItem(it)
+        text_items = []
+
+        # 聚类（DBSCAN / 栅格）
+        clusters = cluster_frame(pts)
+
+        # 所有轨迹 miss+1
+        for tr in tracks: tr.miss += 1
+
+        # 抗“吸附”：在 Object 周围切开可能合并的大簇
+        if clusters and any(tr.obj_confirmed for tr in tracks):
+            new_clusters = []
+            used_flags = [False]*len(clusters)
+            for tr in tracks:
+                if not tr.obj_confirmed: continue
+                ocx, ocz = tr.last()
+                for ci, c in enumerate(clusters):
+                    if used_flags[ci]: continue
+                    if is_small_object(c["bbox"], c["pts"].shape[0]): continue
+                    cx, cz = c["centroid_xz"]
+                    if math.hypot(cx - ocx, cz - ocz) > max(OBJ_EXCLUDE_R*1.2, OBJ_ASSOC_GATE*1.5): continue
+                    ok, sub_in, sub_out = split_cluster_near_object(c, ocx, ocz, radius=OBJ_EXCLUDE_R)
+                    if ok:
+                        new_clusters.append(sub_in); new_clusters.append(sub_out); used_flags[ci] = True
+            for ci, c in enumerate(clusters):
+                if not used_flags[ci]: new_clusters.append(c)
+            clusters = new_clusters
+
+        # 关联：两阶段 + 预测门
+        used = [False] * len(clusters)
+
+        # A：Object 再关联（小门限 + 预测）
+        obj_tracks = [tr for tr in tracks if tr.obj_confirmed]
+        for tr in obj_tracks:
+            best = None; bestd = None; best_ci = None
+            px_pred, pz_pred = tr.predict_pos(abs_t[idx])
+            for ci, c in enumerate(clusters):
+                if used[ci]: continue
+                npts = len(c["idxs"])
+                if not small_object_with_margin(c["bbox"], npts): continue
+                cx, cz = c["centroid_xz"]
+                dt_gap_ms = max(0.0, (abs_t[idx] - tr.times[-1])) * 1000.0
+                gate_extra = min(PRED_GATE_MAX_EXTRA, PRED_GATE_BASE + PRED_GATE_EXTRA_PER_MS * dt_gap_ms)
+                d = math.hypot(cx - px_pred, cz - pz_pred)
+                if d <= (OBJ_ASSOC_GATE + gate_extra) and (bestd is None or d < bestd):
+                    bestd = d; best = c; best_ci = ci
+            if best is not None:
+                used[best_ci] = True
+                cx, cz = best["centroid_xz"]; xmin, xmax, ymin, ymax, zmin, zmax = best["bbox"]
+                yext = ymax - ymin; npts = len(best["idxs"])
+                tr.add(cx, cz, abs_t[idx], yext, bbox=best["bbox"], frame_idx=idx, npts=npts, pts=best["pts"])
+            else:
+                tr.obj_latch_until = max(tr.obj_latch_until, abs_t[idx] + 0.2)
+
+        # B：其余轨迹常规关联（预测门）
+        for ci, c in enumerate(clusters):
+            if used[ci]: continue
+            cx, cz = c["centroid_xz"]; xmin, xmax, ymin, ymax, zmin, zmax = c["bbox"]
+            yext = ymax - ymin; npts = len(c["idxs"])
+            best = None; bestd = None
+            for tr in tracks:
+                if tr.last_frame() >= idx: continue
+                if tr.obj_confirmed:
+                    gate = OBJ_ASSOC_GATE
+                    if not small_object_with_margin(c["bbox"], npts): continue
+                else:
+                    gate = assoc_gate
+                    if tr.is_objectish() and (not is_small_object(c["bbox"], npts)): continue
+                px_pred, pz_pred = tr.predict_pos(abs_t[idx])
+                dt_gap_ms = max(0.0, (abs_t[idx] - tr.times[-1])) * 1000.0
+                gate_extra = min(PRED_GATE_MAX_EXTRA, PRED_GATE_BASE + PRED_GATE_EXTRA_PER_MS * dt_gap_ms)
+                d = math.hypot(cx - px_pred, cz - pz_pred)
+                if d <= (gate + gate_extra) and (bestd is None or d < bestd):
+                    bestd = d; best = tr
+            if best is not None:
+                used[ci] = True
+                best.add(cx, cz, abs_t[idx], yext, bbox=c["bbox"], frame_idx=idx, npts=npts, pts=c["pts"])
+
+        # 新建轨迹
+        for ci, c in enumerate(clusters):
+            if used[ci]: continue
+            cx, cz = c["centroid_xz"]; xmin, xmax, ymin, ymax, zmin, zmax = c["bbox"]
+            npts = len(c["idxs"])
+            tr = Track(cx, cz, abs_t[idx], ymax - ymin, bbox=c["bbox"], frame_idx=idx, npts=npts, pts=c["pts"])
+            tracks.append(tr)
+
+        # 清理
+        tracks = [tr for tr in tracks if tr.miss <= MAX_MISS]
+
+        # —— 绘制：Object → E‑Scooter → People ——
+        ped_count = 0; obj_count = 0; scoot_count = 0
+        for tr in tracks:
+            # 1) Object
+            if tr.update_object_state(abs_t[idx]) and tr.last_bbox is not None:
+                xmin,xmax,ymin,ymax,zmin,zmax = tr.last_bbox
+                segs = make_bbox_lines(xmin, xmax, ymin, ymax, zmin, zmax)
+                box = gl.GLLinePlotItem(pos=segs, mode='lines', color=OBJ_BOX_COLOR, width=OBJ_BOX_WIDTH, antialias=True)
+                view.addItem(box); box_items.append(box)
+                if HAS_GLTEXT and LABEL_OBJECT:
+                    cx3 = (xmin + xmax)/2; cy3 = ymax + 0.1; cz3 = (zmin + zmax)/2
+                    txt = GLTextItem(pos=(cx3, cy3, cz3), text="Object",
+                                     color=QtGui.QColor(0,153,255), font=QtGui.QFont("Microsoft YaHei", 14))
+                    view.addItem(txt); text_items.append(txt)
+                obj_count += 1
+                continue
+
+            # 2) E‑Scooter + Rider
+            show_sc, feat = tr.update_escooter_state(abs_t[idx], ESCOOTER_CFG)
+            if show_sc and feat is not None:
+                obb = feat['obb']
+                segs = obb_corners_lines(obb['center'], obb['u'], obb['v'], obb['L'], obb['W'],
+                                         feat['y_min'], feat['y_max'])
+                box = gl.GLLinePlotItem(pos=segs, mode='lines', color=ESCOOTER_COLOR,
+                                        width=ESCOOTER_BOX_WIDTH, antialias=True)
+                view.addItem(box); box_items.append(box)
+                # 立杆端 + 站立区
+                u = obb['u']; v = obb['v']; center = obb['center']; L = obb['L']
+                u_min, u_max = obb['u_rng']; u_peak = feat['u_peak']
+                near_is_min = (abs(u_peak - u_min) <= abs(u_max - u_peak))
+                sign = -1.0 if near_is_min else 1.0
+                near_x = center[0] + sign*(L*0.5)*u[0]; near_z = center[1] + sign*(L*0.5)*u[1]
+                pole_len = max(0.1, 0.05*L)
+                pole_a = np.array([near_x, feat['y_min'], near_z])
+                pole_b = np.array([near_x + pole_len*u[0], feat['y_min'], near_z + pole_len*u[1]])
+                pole_item = gl.GLLinePlotItem(pos=np.vstack([pole_a, pole_b]), mode='lines', color=ESCOOTER_COLOR,
+                                              width=ESCOOTER_BOX_WIDTH, antialias=True)
+                view.addItem(pole_item); box_items.append(pole_item)
+                sz = ESCOOTER_CFG['stand']; du = sz['length']*0.5; dv = sz['width']*0.5
+                c_u = sz['center_from_pole'] if near_is_min else (-sz['center_from_pole'])
+                czx = np.array([near_x + c_u*u[0], near_z + c_u*u[1]])
+                vx, vz = v; y0 = feat['y_min'] + 0.02
+                rect=[]
+                for su in (-1,1):
+                    for sv in (-1,1):
+                        x = czx[0] + su*du*u[0] + sv*dv*vx
+                        z = czx[1] + su*du*u[1] + sv*dv*vz
+                        rect.append([x,y0,z])
+                r0,r1,r2,r3 = rect
+                rect_edges = np.vstack([r0,r1, r1,r3, r3,r2, r2,r0])
+                rect_item = gl.GLLinePlotItem(pos=rect_edges, mode='lines', color=ESCOOTER_COLOR, width=1, antialias=True)
+                view.addItem(rect_item); box_items.append(rect_item)
+                if HAS_GLTEXT and ESCOOTER_LABEL:
+                    vtxt = tr.speed_robust()
+                    txtpos = (near_x, feat['y_max']+0.1, near_z)
+                    txt = GLTextItem(pos=txtpos, text=f"E‑Scooter + Rider {vtxt:.2f} m/s",
+                                     color=QtGui.QColor(255,204,102), font=QtGui.QFont("Microsoft YaHei", 14))
+                    view.addItem(txt); text_items.append(txt)
+                scoot_count += 1
+                continue
+
+            # 3) People
+            show, v = tr.update_score_and_state(abs_t[idx])
+            if not show: continue
+            xmin,xmax,ymin,ymax,zmin,zmax = tr.display_bbox()
+            segs = make_bbox_lines(xmin, xmax, ymin, ymax, zmin, zmax)
+            box = gl.GLLinePlotItem(pos=segs, mode='lines', color=BOX_COLOR, width=BOX_WIDTH, antialias=True)
+            view.addItem(box); box_items.append(box)
+            if HAS_GLTEXT and LABEL_SPEED:
+                cx3 = (xmin + xmax)/2; cy3 = ymax + 0.1; cz3 = (zmin + zmax)/2
+                txt = GLTextItem(pos=(cx3, cy3, cz3), text=f"People {v:.2f} m/s",
+                                 color=QtGui.QColor(0,255,0), font=QtGui.QFont("Microsoft YaHei", 14))
+                view.addItem(txt); text_items.append(txt)
+            ped_count += 1
+
+        view.setWindowTitle(
+            f'Radar 3D: {rel_t[idx]:.3f} s  行人:{ped_count}  物体:{obj_count}  滑板车+人:{scoot_count}  gate={assoc_gate:.2f} m'
+        )
+
+    timer.timeout.connect(update)
+    timer.start()
+    QtWidgets.QApplication.instance().exec_()
+
+if __name__ == '__main__':
+    main()
