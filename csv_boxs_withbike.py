@@ -7,6 +7,7 @@ Radar 3D viewer with People / Object / E‑Scooter+Rider
 Design refs: escooter_rider_config.json / readme
 """
 
+import argparse
 import csv, math, os
 from collections import defaultdict, deque
 from datetime import datetime
@@ -15,9 +16,54 @@ from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
 import pyqtgraph.opengl as gl
 
 # ================= 基本配置 =================
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(SCRIPT_DIR, 'Data')
 
-CSV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        'escooter_fast_without_RSC.csv')
+
+def _default_csv_file():
+    candidates = []
+    if os.path.isdir(DATA_DIR):
+        for name in sorted(os.listdir(DATA_DIR)):
+            if name.lower().endswith('.csv') and 'scooter' in name.lower():
+                path = os.path.join(DATA_DIR, name)
+                if os.path.isfile(path):
+                    candidates.append(path)
+    if candidates:
+        return candidates[0]
+    fallback = os.path.join(SCRIPT_DIR, 'escooter_fast_without_RSC.csv')
+    return fallback if os.path.isfile(fallback) else None
+
+
+CSV_FILE = _default_csv_file()
+
+
+def list_scooter_csvs(data_dir=DATA_DIR):
+    files = []
+    if os.path.isdir(data_dir):
+        for name in sorted(os.listdir(data_dir)):
+            if name.lower().endswith('.csv') and 'scooter' in name.lower():
+                path = os.path.join(data_dir, name)
+                if os.path.isfile(path):
+                    files.append(path)
+    return files
+
+
+def resolve_csv_path(csv_path=None, data_dir=DATA_DIR):
+    if csv_path:
+        candidate = csv_path
+        if not os.path.isabs(candidate):
+            candidate = os.path.join(SCRIPT_DIR, candidate)
+            if not os.path.isfile(candidate):
+                candidate = os.path.join(data_dir, csv_path)
+        candidate = os.path.abspath(candidate)
+        if os.path.isfile(candidate):
+            return candidate
+        raise FileNotFoundError(f'CSV 文件未找到: {csv_path}')
+
+    default = _default_csv_file()
+    if default is None:
+        raise FileNotFoundError('未在 Data 目录或脚本根目录找到默认的 e-scooter CSV 文件，请使用 --csv 指定。')
+    return default
 
 ROTATE_Y_PLUS_90_FOR_X_ALIGNED_WALK = False
 
@@ -694,8 +740,248 @@ class Track:
 
 # ================= 主循环 =================
 
-def main():
-    data, frames, rel_t, abs_t, dt_med = load_frames(CSV_FILE)
+
+def tracking_step(tracks, clusters, abs_time, frame_idx, assoc_gate):
+    track_list = tracks
+    for tr in track_list:
+        tr.miss += 1
+
+    if clusters and any(tr.obj_confirmed for tr in track_list):
+        new_clusters = []
+        used_flags = [False] * len(clusters)
+        for tr in track_list:
+            if not tr.obj_confirmed:
+                continue
+            ocx, ocz = tr.last()
+            for ci, c in enumerate(clusters):
+                if used_flags[ci]:
+                    continue
+                if is_small_object(c["bbox"], c["pts"].shape[0]):
+                    continue
+                cx, cz = c["centroid_xz"]
+                if math.hypot(cx - ocx, cz - ocz) > max(OBJ_EXCLUDE_R * 1.2, OBJ_ASSOC_GATE * 1.5):
+                    continue
+                ok, sub_in, sub_out = split_cluster_near_object(c, ocx, ocz, radius=OBJ_EXCLUDE_R)
+                if ok:
+                    if sub_in is not None:
+                        new_clusters.append(sub_in)
+                    if sub_out is not None:
+                        new_clusters.append(sub_out)
+                    used_flags[ci] = True
+        for ci, c in enumerate(clusters):
+            if not used_flags[ci]:
+                new_clusters.append(c)
+        clusters = new_clusters
+
+    used = [False] * len(clusters)
+
+    obj_tracks = [tr for tr in track_list if tr.obj_confirmed]
+    for tr in obj_tracks:
+        best = None
+        bestd = None
+        best_ci = None
+        px_pred, pz_pred = tr.predict_pos(abs_time)
+        for ci, c in enumerate(clusters):
+            if used[ci]:
+                continue
+            npts = len(c["idxs"])
+            if not small_object_with_margin(c["bbox"], npts):
+                continue
+            cx, cz = c["centroid_xz"]
+            dt_gap_ms = max(0.0, (abs_time - tr.times[-1])) * 1000.0
+            gate_extra = min(PRED_GATE_MAX_EXTRA, PRED_GATE_BASE + PRED_GATE_EXTRA_PER_MS * dt_gap_ms)
+            d = math.hypot(cx - px_pred, cz - pz_pred)
+            if d <= (OBJ_ASSOC_GATE + gate_extra) and (bestd is None or d < bestd):
+                bestd = d
+                best = c
+                best_ci = ci
+        if best is not None:
+            used[best_ci] = True
+            cx, cz = best["centroid_xz"]
+            xmin, xmax, ymin, ymax, zmin, zmax = best["bbox"]
+            yext = ymax - ymin
+            npts = len(best["idxs"])
+            tr.add(cx, cz, abs_time, yext, bbox=best["bbox"], frame_idx=frame_idx, npts=npts, pts=best["pts"])
+        else:
+            tr.obj_latch_until = max(tr.obj_latch_until, abs_time + 0.2)
+
+    for ci, c in enumerate(clusters):
+        if used[ci]:
+            continue
+        cx, cz = c["centroid_xz"]
+        xmin, xmax, ymin, ymax, zmin, zmax = c["bbox"]
+        yext = ymax - ymin
+        npts = len(c["idxs"])
+        best = None
+        bestd = None
+        for tr in track_list:
+            if tr.last_frame() >= frame_idx:
+                continue
+            if tr.obj_confirmed:
+                gate = OBJ_ASSOC_GATE
+                if not small_object_with_margin(c["bbox"], npts):
+                    continue
+            else:
+                gate = assoc_gate
+                if tr.is_objectish() and (not is_small_object(c["bbox"], npts)):
+                    continue
+            px_pred, pz_pred = tr.predict_pos(abs_time)
+            dt_gap_ms = max(0.0, (abs_time - tr.times[-1])) * 1000.0
+            gate_extra = min(PRED_GATE_MAX_EXTRA, PRED_GATE_BASE + PRED_GATE_EXTRA_PER_MS * dt_gap_ms)
+            d = math.hypot(cx - px_pred, cz - pz_pred)
+            if d <= (gate + gate_extra) and (bestd is None or d < bestd):
+                bestd = d
+                best = tr
+        if best is not None:
+            used[ci] = True
+            best.add(cx, cz, abs_time, yext, bbox=c["bbox"], frame_idx=frame_idx, npts=npts, pts=c["pts"])
+
+    for ci, c in enumerate(clusters):
+        if used[ci]:
+            continue
+        cx, cz = c["centroid_xz"]
+        xmin, xmax, ymin, ymax, zmin, zmax = c["bbox"]
+        npts = len(c["idxs"])
+        track_list.append(Track(cx, cz, abs_time, ymax - ymin, bbox=c["bbox"], frame_idx=frame_idx, npts=npts, pts=c["pts"]))
+
+    track_list = [tr for tr in track_list if tr.miss <= MAX_MISS]
+
+    results = {
+        "objects": [],
+        "escooters": [],
+        "people": [],
+        "counts": {"obj": 0, "escooter": 0, "ped": 0},
+    }
+
+    for tr in track_list:
+        if tr.update_object_state(abs_time) and tr.last_bbox is not None:
+            results["objects"].append({
+                "track_id": tr.id,
+                "bbox": tr.last_bbox,
+                "speed": tr.speed_robust(),
+            })
+            results["counts"]["obj"] += 1
+            continue
+
+        show_sc, feat = tr.update_escooter_state(abs_time, ESCOOTER_CFG)
+        if show_sc and feat is not None:
+            results["escooters"].append({
+                "track_id": tr.id,
+                "centroid": tr.last(),
+                "speed": tr.speed_robust(),
+                "features": feat,
+            })
+            results["counts"]["escooter"] += 1
+            continue
+
+        show, v = tr.update_score_and_state(abs_time)
+        if show:
+            results["people"].append({
+                "track_id": tr.id,
+                "bbox": tr.display_bbox(),
+                "speed": v,
+            })
+            results["counts"]["ped"] += 1
+
+    return track_list, results
+
+
+def summarize_escooter_tracks(detections):
+    if not detections:
+        return []
+
+    by_track = {}
+    for det in detections:
+        tid = det["track_id"]
+        info = by_track.setdefault(tid, {
+            "frames": [],
+            "rel_times": [],
+            "abs_times": [],
+            "speeds": [],
+            "positions": [],
+        })
+        info["frames"].append(det["frame_index"])
+        info["rel_times"].append(det["rel_time"])
+        info["abs_times"].append(det["abs_time"])
+        info["speeds"].append(det["speed"])
+        info["positions"].append(det["centroid"])
+
+    summary = []
+    for tid, info in by_track.items():
+        frames = info["frames"]
+        rel_times = info["rel_times"]
+        abs_times = info["abs_times"]
+        speeds = info["speeds"]
+        pos = info["positions"]
+
+        path_len = 0.0
+        for (x1, z1), (x2, z2) in zip(pos, pos[1:]):
+            path_len += math.hypot(x2 - x1, z2 - z1)
+
+        summary.append({
+            "track_id": tid,
+            "start_frame": frames[0],
+            "end_frame": frames[-1],
+            "num_detections": len(frames),
+            "rel_start": rel_times[0],
+            "rel_end": rel_times[-1],
+            "abs_start": abs_times[0],
+            "abs_end": abs_times[-1],
+            "duration": rel_times[-1] - rel_times[0] if len(rel_times) > 1 else 0.0,
+            "median_speed": float(np.median(speeds)) if speeds else 0.0,
+            "max_speed": float(np.max(speeds)) if speeds else 0.0,
+            "mean_speed": float(np.mean(speeds)) if speeds else 0.0,
+            "path_length": path_len,
+            "start_position": pos[0],
+            "end_position": pos[-1],
+        })
+
+    summary.sort(key=lambda item: item["rel_start"])
+    return summary
+
+
+def analyze_scooter_csv(csv_file, verbose=True):
+    data, frames, rel_t, abs_t, dt_med = load_frames(csv_file)
+    assoc_gate = max(ASSOC_GATE_BASE_M, SPEED_SANITY_MAX * dt_med * 2.0)
+    tracks = []
+    Track._next = 1
+    detections = []
+
+    for idx, fid in enumerate(frames):
+        pts = np.array(data[fid], float) if data[fid] else np.zeros((0, 3))
+        clusters = cluster_frame(pts)
+        tracks, results = tracking_step(tracks, clusters, abs_t[idx], idx, assoc_gate)
+        for es in results["escooters"]:
+            detections.append({
+                "track_id": es["track_id"],
+                "frame": fid,
+                "frame_index": idx,
+                "rel_time": rel_t[idx],
+                "abs_time": abs_t[idx],
+                "speed": es["speed"],
+                "centroid": es["centroid"],
+                "features": es["features"],
+            })
+
+    summary = summarize_escooter_tracks(detections)
+    if verbose:
+        name = os.path.basename(csv_file)
+        if not summary:
+            print(f"{name}: 未检测到 e-scooter 行驶轨迹。")
+        else:
+            print(f"{name}: 检测到 {len(summary)} 段 e-scooter 行驶。")
+            for item in summary:
+                print(
+                    f"  轨迹 #{item['track_id']:02d}: {item['rel_start']:.2f}s → {item['rel_end']:.2f}s "
+                    f"(持续 {item['duration']:.2f}s, 样本 {item['num_detections']})，速度中位 {item['median_speed']:.2f} m/s，"
+                    f"距离约 {item['path_length']:.2f} m"
+                )
+
+    return summary, detections
+
+def run_viewer(csv_file):
+    csv_file = os.path.abspath(csv_file)
+    data, frames, rel_t, abs_t, dt_med = load_frames(csv_file)
     total_time = rel_t[-1] if len(rel_t) else 0.0
     assoc_gate = max(ASSOC_GATE_BASE_M, SPEED_SANITY_MAX * dt_med * 2.0)
 
@@ -703,7 +989,7 @@ def main():
     view = gl.GLViewWidget()
     view.opts['distance'] = 20
     view.setCameraPosition(azimuth=45, elevation=20, distance=20)
-    view.setWindowTitle(f'Radar 3D (Scooter+Rider & People): 0.000 s [{os.path.basename(CSV_FILE)}]')
+    view.setWindowTitle(f'Radar 3D (Scooter+Rider & People): 0.000 s [{os.path.basename(csv_file)}]')
     view.show()
     axis = gl.GLAxisItem(); axis.setSize(x=10, y=10, z=10); view.addItem(axis)
     grid = gl.GLGridItem(); grid.setSize(10, 10); grid.setSpacing(1, 1); view.addItem(grid)
@@ -711,6 +997,7 @@ def main():
 
     box_items, text_items = [], []
     tracks = []
+    Track._next = 1
 
     timer = QtCore.QTimer()
     timer.setInterval(max(int(dt_med * 1000), 20))
@@ -734,180 +1021,133 @@ def main():
         pts = np.array(data[frames[idx]], float) if data[frames[idx]] else np.zeros((0, 3))
         scatter.setData(pos=pts)
 
-        # 清除上一帧图元
         for it in box_items: view.removeItem(it)
         box_items = []
         for it in text_items: view.removeItem(it)
         text_items = []
 
-        # 聚类（DBSCAN / 栅格）
         clusters = cluster_frame(pts)
+        tracks, results = tracking_step(tracks, clusters, abs_t[idx], idx, assoc_gate)
 
-        # 所有轨迹 miss+1
-        for tr in tracks: tr.miss += 1
+        counts = results["counts"]
 
-        # 抗“吸附”：在 Object 周围切开可能合并的大簇
-        if clusters and any(tr.obj_confirmed for tr in tracks):
-            new_clusters = []
-            used_flags = [False]*len(clusters)
-            for tr in tracks:
-                if not tr.obj_confirmed: continue
-                ocx, ocz = tr.last()
-                for ci, c in enumerate(clusters):
-                    if used_flags[ci]: continue
-                    if is_small_object(c["bbox"], c["pts"].shape[0]): continue
-                    cx, cz = c["centroid_xz"]
-                    if math.hypot(cx - ocx, cz - ocz) > max(OBJ_EXCLUDE_R*1.2, OBJ_ASSOC_GATE*1.5): continue
-                    ok, sub_in, sub_out = split_cluster_near_object(c, ocx, ocz, radius=OBJ_EXCLUDE_R)
-                    if ok:
-                        new_clusters.append(sub_in); new_clusters.append(sub_out); used_flags[ci] = True
-            for ci, c in enumerate(clusters):
-                if not used_flags[ci]: new_clusters.append(c)
-            clusters = new_clusters
+        for obj in results["objects"]:
+            bbox = obj["bbox"]
+            xmin, xmax, ymin, ymax, zmin, zmax = bbox
+            segs = make_bbox_lines(xmin, xmax, ymin, ymax, zmin, zmax)
+            box = gl.GLLinePlotItem(pos=segs, mode='lines', color=OBJ_BOX_COLOR, width=OBJ_BOX_WIDTH, antialias=True)
+            view.addItem(box); box_items.append(box)
+            if HAS_GLTEXT and LABEL_OBJECT:
+                cx3 = (xmin + xmax)/2; cy3 = ymax + 0.1; cz3 = (zmin + zmax)/2
+                txt = GLTextItem(pos=(cx3, cy3, cz3), text="Object",
+                                 color=QtGui.QColor(0,153,255), font=QtGui.QFont("Microsoft YaHei", 14))
+                view.addItem(txt); text_items.append(txt)
 
-        # 关联：两阶段 + 预测门
-        used = [False] * len(clusters)
+        for es in results["escooters"]:
+            feat = es["features"]
+            obb = feat['obb']
+            segs = obb_corners_lines(obb['center'], obb['u'], obb['v'], obb['L'], obb['W'],
+                                     feat['y_min'], feat['y_max'])
+            box = gl.GLLinePlotItem(pos=segs, mode='lines', color=ESCOOTER_COLOR,
+                                    width=ESCOOTER_BOX_WIDTH, antialias=True)
+            view.addItem(box); box_items.append(box)
 
-        # A：Object 再关联（小门限 + 预测）
-        obj_tracks = [tr for tr in tracks if tr.obj_confirmed]
-        for tr in obj_tracks:
-            best = None; bestd = None; best_ci = None
-            px_pred, pz_pred = tr.predict_pos(abs_t[idx])
-            for ci, c in enumerate(clusters):
-                if used[ci]: continue
-                npts = len(c["idxs"])
-                if not small_object_with_margin(c["bbox"], npts): continue
-                cx, cz = c["centroid_xz"]
-                dt_gap_ms = max(0.0, (abs_t[idx] - tr.times[-1])) * 1000.0
-                gate_extra = min(PRED_GATE_MAX_EXTRA, PRED_GATE_BASE + PRED_GATE_EXTRA_PER_MS * dt_gap_ms)
-                d = math.hypot(cx - px_pred, cz - pz_pred)
-                if d <= (OBJ_ASSOC_GATE + gate_extra) and (bestd is None or d < bestd):
-                    bestd = d; best = c; best_ci = ci
-            if best is not None:
-                used[best_ci] = True
-                cx, cz = best["centroid_xz"]; xmin, xmax, ymin, ymax, zmin, zmax = best["bbox"]
-                yext = ymax - ymin; npts = len(best["idxs"])
-                tr.add(cx, cz, abs_t[idx], yext, bbox=best["bbox"], frame_idx=idx, npts=npts, pts=best["pts"])
-            else:
-                tr.obj_latch_until = max(tr.obj_latch_until, abs_t[idx] + 0.2)
+            u = obb['u']; v = obb['v']; center = obb['center']; L = obb['L']
+            u_min, u_max = obb['u_rng']; u_peak = feat['u_peak']
+            near_is_min = (abs(u_peak - u_min) <= abs(u_max - u_peak))
+            sign = -1.0 if near_is_min else 1.0
+            near_x = center[0] + sign*(L*0.5)*u[0]; near_z = center[1] + sign*(L*0.5)*u[1]
+            pole_len = max(0.1, 0.05*L)
+            pole_a = np.array([near_x, feat['y_min'], near_z])
+            pole_b = np.array([near_x + pole_len*u[0], feat['y_min'], near_z + pole_len*u[1]])
+            pole_item = gl.GLLinePlotItem(pos=np.vstack([pole_a, pole_b]), mode='lines', color=ESCOOTER_COLOR,
+                                          width=ESCOOTER_BOX_WIDTH, antialias=True)
+            view.addItem(pole_item); box_items.append(pole_item)
+            sz = ESCOOTER_CFG['stand']; du = sz['length']*0.5; dv = sz['width']*0.5
+            c_u = sz['center_from_pole'] if near_is_min else (-sz['center_from_pole'])
+            czx = np.array([near_x + c_u*u[0], near_z + c_u*u[1]])
+            vx, vz = v; y0 = feat['y_min'] + 0.02
+            rect = []
+            for su in (-1,1):
+                for sv in (-1,1):
+                    x = czx[0] + su*du*u[0] + sv*dv*vx
+                    z = czx[1] + su*du*u[1] + sv*dv*vz
+                    rect.append([x,y0,z])
+            r0,r1,r2,r3 = rect
+            rect_edges = np.vstack([r0,r1, r1,r3, r3,r2, r2,r0])
+            rect_item = gl.GLLinePlotItem(pos=rect_edges, mode='lines', color=ESCOOTER_COLOR, width=1, antialias=True)
+            view.addItem(rect_item); box_items.append(rect_item)
+            if HAS_GLTEXT and ESCOOTER_LABEL:
+                vtxt = es["speed"]
+                txtpos = (near_x, feat['y_max']+0.1, near_z)
+                txt = GLTextItem(pos=txtpos, text=f"E‑Scooter + Rider {vtxt:.2f} m/s",
+                                 color=QtGui.QColor(255,204,102), font=QtGui.QFont("Microsoft YaHei", 14))
+                view.addItem(txt); text_items.append(txt)
 
-        # B：其余轨迹常规关联（预测门）
-        for ci, c in enumerate(clusters):
-            if used[ci]: continue
-            cx, cz = c["centroid_xz"]; xmin, xmax, ymin, ymax, zmin, zmax = c["bbox"]
-            yext = ymax - ymin; npts = len(c["idxs"])
-            best = None; bestd = None
-            for tr in tracks:
-                if tr.last_frame() >= idx: continue
-                if tr.obj_confirmed:
-                    gate = OBJ_ASSOC_GATE
-                    if not small_object_with_margin(c["bbox"], npts): continue
-                else:
-                    gate = assoc_gate
-                    if tr.is_objectish() and (not is_small_object(c["bbox"], npts)): continue
-                px_pred, pz_pred = tr.predict_pos(abs_t[idx])
-                dt_gap_ms = max(0.0, (abs_t[idx] - tr.times[-1])) * 1000.0
-                gate_extra = min(PRED_GATE_MAX_EXTRA, PRED_GATE_BASE + PRED_GATE_EXTRA_PER_MS * dt_gap_ms)
-                d = math.hypot(cx - px_pred, cz - pz_pred)
-                if d <= (gate + gate_extra) and (bestd is None or d < bestd):
-                    bestd = d; best = tr
-            if best is not None:
-                used[ci] = True
-                best.add(cx, cz, abs_t[idx], yext, bbox=c["bbox"], frame_idx=idx, npts=npts, pts=c["pts"])
-
-        # 新建轨迹
-        for ci, c in enumerate(clusters):
-            if used[ci]: continue
-            cx, cz = c["centroid_xz"]; xmin, xmax, ymin, ymax, zmin, zmax = c["bbox"]
-            npts = len(c["idxs"])
-            tr = Track(cx, cz, abs_t[idx], ymax - ymin, bbox=c["bbox"], frame_idx=idx, npts=npts, pts=c["pts"])
-            tracks.append(tr)
-
-        # 清理
-        tracks = [tr for tr in tracks if tr.miss <= MAX_MISS]
-
-        # —— 绘制：Object → E‑Scooter → People ——
-        ped_count = 0; obj_count = 0; scoot_count = 0
-        for tr in tracks:
-            # 1) Object
-            if tr.update_object_state(abs_t[idx]) and tr.last_bbox is not None:
-                xmin,xmax,ymin,ymax,zmin,zmax = tr.last_bbox
-                segs = make_bbox_lines(xmin, xmax, ymin, ymax, zmin, zmax)
-                box = gl.GLLinePlotItem(pos=segs, mode='lines', color=OBJ_BOX_COLOR, width=OBJ_BOX_WIDTH, antialias=True)
-                view.addItem(box); box_items.append(box)
-                if HAS_GLTEXT and LABEL_OBJECT:
-                    cx3 = (xmin + xmax)/2; cy3 = ymax + 0.1; cz3 = (zmin + zmax)/2
-                    txt = GLTextItem(pos=(cx3, cy3, cz3), text="Object",
-                                     color=QtGui.QColor(0,153,255), font=QtGui.QFont("Microsoft YaHei", 14))
-                    view.addItem(txt); text_items.append(txt)
-                obj_count += 1
-                continue
-
-            # 2) E‑Scooter + Rider
-            show_sc, feat = tr.update_escooter_state(abs_t[idx], ESCOOTER_CFG)
-            if show_sc and feat is not None:
-                obb = feat['obb']
-                segs = obb_corners_lines(obb['center'], obb['u'], obb['v'], obb['L'], obb['W'],
-                                         feat['y_min'], feat['y_max'])
-                box = gl.GLLinePlotItem(pos=segs, mode='lines', color=ESCOOTER_COLOR,
-                                        width=ESCOOTER_BOX_WIDTH, antialias=True)
-                view.addItem(box); box_items.append(box)
-                # 立杆端 + 站立区
-                u = obb['u']; v = obb['v']; center = obb['center']; L = obb['L']
-                u_min, u_max = obb['u_rng']; u_peak = feat['u_peak']
-                near_is_min = (abs(u_peak - u_min) <= abs(u_max - u_peak))
-                sign = -1.0 if near_is_min else 1.0
-                near_x = center[0] + sign*(L*0.5)*u[0]; near_z = center[1] + sign*(L*0.5)*u[1]
-                pole_len = max(0.1, 0.05*L)
-                pole_a = np.array([near_x, feat['y_min'], near_z])
-                pole_b = np.array([near_x + pole_len*u[0], feat['y_min'], near_z + pole_len*u[1]])
-                pole_item = gl.GLLinePlotItem(pos=np.vstack([pole_a, pole_b]), mode='lines', color=ESCOOTER_COLOR,
-                                              width=ESCOOTER_BOX_WIDTH, antialias=True)
-                view.addItem(pole_item); box_items.append(pole_item)
-                sz = ESCOOTER_CFG['stand']; du = sz['length']*0.5; dv = sz['width']*0.5
-                c_u = sz['center_from_pole'] if near_is_min else (-sz['center_from_pole'])
-                czx = np.array([near_x + c_u*u[0], near_z + c_u*u[1]])
-                vx, vz = v; y0 = feat['y_min'] + 0.02
-                rect=[]
-                for su in (-1,1):
-                    for sv in (-1,1):
-                        x = czx[0] + su*du*u[0] + sv*dv*vx
-                        z = czx[1] + su*du*u[1] + sv*dv*vz
-                        rect.append([x,y0,z])
-                r0,r1,r2,r3 = rect
-                rect_edges = np.vstack([r0,r1, r1,r3, r3,r2, r2,r0])
-                rect_item = gl.GLLinePlotItem(pos=rect_edges, mode='lines', color=ESCOOTER_COLOR, width=1, antialias=True)
-                view.addItem(rect_item); box_items.append(rect_item)
-                if HAS_GLTEXT and ESCOOTER_LABEL:
-                    vtxt = tr.speed_robust()
-                    txtpos = (near_x, feat['y_max']+0.1, near_z)
-                    txt = GLTextItem(pos=txtpos, text=f"E‑Scooter + Rider {vtxt:.2f} m/s",
-                                     color=QtGui.QColor(255,204,102), font=QtGui.QFont("Microsoft YaHei", 14))
-                    view.addItem(txt); text_items.append(txt)
-                scoot_count += 1
-                continue
-
-            # 3) People
-            show, v = tr.update_score_and_state(abs_t[idx])
-            if not show: continue
-            xmin,xmax,ymin,ymax,zmin,zmax = tr.display_bbox()
+        for ped in results["people"]:
+            xmin,xmax,ymin,ymax,zmin,zmax = ped["bbox"]
             segs = make_bbox_lines(xmin, xmax, ymin, ymax, zmin, zmax)
             box = gl.GLLinePlotItem(pos=segs, mode='lines', color=BOX_COLOR, width=BOX_WIDTH, antialias=True)
             view.addItem(box); box_items.append(box)
             if HAS_GLTEXT and LABEL_SPEED:
                 cx3 = (xmin + xmax)/2; cy3 = ymax + 0.1; cz3 = (zmin + zmax)/2
-                txt = GLTextItem(pos=(cx3, cy3, cz3), text=f"People {v:.2f} m/s",
+                txt = GLTextItem(pos=(cx3, cy3, cz3), text=f"People {ped['speed']:.2f} m/s",
                                  color=QtGui.QColor(0,255,0), font=QtGui.QFont("Microsoft YaHei", 14))
                 view.addItem(txt); text_items.append(txt)
-            ped_count += 1
 
         view.setWindowTitle(
-            f'Radar 3D: {rel_t[idx]:.3f} s  行人:{ped_count}  物体:{obj_count}  滑板车+人:{scoot_count}  gate={assoc_gate:.2f} m'
+            f'Radar 3D: {rel_t[idx]:.3f} s  行人:{counts["ped"]}  物体:{counts["obj"]}  滑板车+人:{counts["escooter"]}  gate={assoc_gate:.2f} m'
         )
 
     timer.timeout.connect(update)
     timer.start()
     QtWidgets.QApplication.instance().exec_()
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description='Radar 3D viewer & analyzer for e-scooter detection.')
+    parser.add_argument('--csv', help='指定需要加载的 CSV 文件（可为相对路径或文件名）。')
+    parser.add_argument('--data-dir', default=DATA_DIR, help='数据目录（默认: 脚本目录下的 Data）。')
+    parser.add_argument('--list', action='store_true', help='列出 data 目录下所有包含 scooter 的 CSV 文件后退出。')
+    parser.add_argument('--analyze', action='store_true', help='不启用 3D 可视化，直接离线分析 e-scooter 行驶经过。')
+    parser.add_argument('--all', action='store_true', help='与 --analyze 一起使用，批量分析 data 目录下的所有 scooter CSV。')
+    args = parser.parse_args(argv)
+
+    data_dir = os.path.abspath(args.data_dir)
+
+    if args.list:
+        files = list_scooter_csvs(data_dir)
+        if files:
+            print('可用的 e-scooter CSV 文件：')
+            for path in files:
+                rel = os.path.relpath(path, SCRIPT_DIR)
+                print(f'  {rel}')
+        else:
+            print('未在指定目录找到包含 scooter 的 CSV 文件。')
+        return
+
+    if args.all and not args.analyze:
+        parser.error('--all 需要与 --analyze 同时使用。')
+
+    try:
+        if args.all:
+            csvs = list_scooter_csvs(data_dir)
+            if args.csv:
+                chosen = resolve_csv_path(args.csv, data_dir)
+                csvs = [chosen] + [p for p in csvs if os.path.abspath(p) != os.path.abspath(chosen)]
+            if not csvs:
+                raise FileNotFoundError('未找到任何包含 scooter 的 CSV 文件。')
+            targets = csvs
+        else:
+            targets = [resolve_csv_path(args.csv, data_dir)]
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc))
+
+    if args.analyze:
+        for path in targets:
+            analyze_scooter_csv(path, verbose=True)
+    else:
+        run_viewer(targets[0])
+
 
 if __name__ == '__main__':
     main()
