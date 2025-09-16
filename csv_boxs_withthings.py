@@ -5,6 +5,8 @@ import numpy as np
 from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
 import pyqtgraph.opengl as gl
 
+from escooter_plugin import EscooterPlugin, oriented_box_segments
+
 
 # ================= 配置 =================
 
@@ -67,6 +69,15 @@ LABEL_SPEED = True
 OBJ_BOX_COLOR = (0, 0.6, 1, 1)  # 青蓝色
 OBJ_BOX_WIDTH = 2
 LABEL_OBJECT = True
+
+# Scooter 绘制
+SCOOTER_BOX_WIDTH = 2.5
+SCOOTER_COLOR_NORMAL = (1.0, 0.7, 0.0, 1.0)
+SCOOTER_COLOR_DANGER = (1.0, 0.0, 0.0, 1.0)
+SCOOTER_LABEL_COLOR = {
+    "ESCOOTER-NORMAL": QtGui.QColor(255, 170, 0),
+    "ESCOOTER-DANGER": QtGui.QColor(255, 64, 64),
+}
 # =======================================
 
 try:
@@ -458,6 +469,7 @@ def main():
 
     box_items, text_items = [], []
     tracks = []
+    scooter_plugin = EscooterPlugin()
 
     timer = QtCore.QTimer()
     timer.setInterval(max(int(dt_med * 1000), 20))  # 兜底 20ms
@@ -468,6 +480,7 @@ def main():
         nonlocal tracks
         tracks.clear()
         Track._next = 1
+        scooter_plugin.reset()
 
     def update():
         nonlocal idx, box_items, text_items, tracks
@@ -643,8 +656,24 @@ def main():
                                  color=QtGui.QColor(0, 255, 0), font=QtGui.QFont("Microsoft YaHei", 14))
                 view.addItem(txt); text_items.append(txt)
 
+        scooter_states = scooter_plugin.process_frame(pts, abs_t[idx], frame_idx=idx)
+        scooter_count = len(scooter_states)
+        for st in scooter_states:
+            segs = oriented_box_segments(st["center"], st["u_axis"], st["v_axis"],
+                                         st["length"], st["width"], st["height"])
+            color = SCOOTER_COLOR_DANGER if st["label"] == "ESCOOTER-DANGER" else SCOOTER_COLOR_NORMAL
+            box = gl.GLLinePlotItem(pos=segs, mode='lines', color=color,
+                                    width=SCOOTER_BOX_WIDTH, antialias=True)
+            view.addItem(box); box_items.append(box)
+            if HAS_GLTEXT:
+                qcolor = SCOOTER_LABEL_COLOR.get(st["label"], QtGui.QColor(255, 170, 0))
+                label = f"{st['label']} #{st['id']} {st['vp90']:.2f} m/s"
+                txt = GLTextItem(pos=tuple(st["label_pos"].tolist()), text=label,
+                                 color=qcolor, font=QtGui.QFont("Microsoft YaHei", 14))
+                view.addItem(txt); text_items.append(txt)
+
         view.setWindowTitle(
-            f'Radar 3D Pedestrian (robust): {rel_t[idx]:.3f} s  行人: {ped_count}  物体: {obj_count}  gate={assoc_gate:.2f} m'
+            f'Radar 3D Pedestrian (robust): {rel_t[idx]:.3f} s  行人: {ped_count}  物体: {obj_count}  滑板车: {scooter_count}  gate={assoc_gate:.2f} m'
         )
 
     timer.timeout.connect(update)
