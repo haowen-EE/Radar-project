@@ -5,6 +5,8 @@ import numpy as np
 from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
 import pyqtgraph.opengl as gl
 
+from escooter_plugin import EscooterPlugin
+
 
 # ================= 配置 =================
 
@@ -458,6 +460,7 @@ def main():
 
     box_items, text_items = [], []
     tracks = []
+    scooter = EscooterPlugin(dt_hint=dt_med)
 
     timer = QtCore.QTimer()
     timer.setInterval(max(int(dt_med * 1000), 20))  # 兜底 20ms
@@ -465,9 +468,10 @@ def main():
     idx = 0
 
     def clear_tracks():
-        nonlocal tracks
+        nonlocal tracks, scooter
         tracks.clear()
         Track._next = 1
+        scooter.reset()
 
     def update():
         nonlocal idx, box_items, text_items, tracks
@@ -482,6 +486,8 @@ def main():
 
         pts = np.array(data[frames[idx]], float) if data[frames[idx]] else np.zeros((0, 3))
         scatter.setData(pos=pts)
+
+        scooter_results = scooter.process_frame(pts, abs_t[idx], frame_idx=idx)
 
         # 清除上一帧图元
         for it in box_items: view.removeItem(it)
@@ -641,6 +647,22 @@ def main():
                 cx3 = (xmin + xmax) / 2; cy3 = ymax + 0.1; cz3 = (zmin + zmax) / 2
                 txt = GLTextItem(pos=(cx3, cy3, cz3), text=f"People {v:.2f} m/s",
                                  color=QtGui.QColor(0, 255, 0), font=QtGui.QFont("Microsoft YaHei", 14))
+                view.addItem(txt); text_items.append(txt)
+
+        for res in scooter_results:
+            segs = res["lines"]
+            color = res["color"]
+            width = res["line_width"]
+            box = gl.GLLinePlotItem(pos=segs, mode='lines', color=color, width=width, antialias=True)
+            view.addItem(box); box_items.append(box)
+
+            if HAS_GLTEXT:
+                r, g, b = [max(0, min(1, float(c))) for c in color[:3]]
+                qcolor = QtGui.QColor(int(r * 255), int(g * 255), int(b * 255))
+                pos = res["label_pos"]
+                txt = GLTextItem(pos=(float(pos[0]), float(pos[1]), float(pos[2])),
+                                 text=res["label_text"], color=qcolor,
+                                 font=QtGui.QFont("Microsoft YaHei", 14))
                 view.addItem(txt); text_items.append(txt)
 
         view.setWindowTitle(
