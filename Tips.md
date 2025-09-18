@@ -3,7 +3,8 @@ SDK version set **3.5**
 
 SDK Setting: 
 
-<img width="531" height="252" alt="image" src="https://github.com/user-attachments/assets/cd41ef93-3525-46a5-85a1-a3b804f6c412" />
+<img width="718" height="1048" alt="image" src="https://github.com/user-attachments/assets/4e389ad1-95aa-48cc-81a6-15dff7ddfcb5" />
+
 
 
 RCS
@@ -15,6 +16,11 @@ Record
 
 
 <img width="210" height="112" alt="image" src="https://github.com/user-attachments/assets/ec52023b-8f3c-4ff8-9b83-26899c0f0363" />
+
+
+Real-Time
+
+<img width="850" height="532" alt="image" src="https://github.com/user-attachments/assets/ddb0e1ac-a163-40ab-ba53-47defccfa6db" />
 
 
 
