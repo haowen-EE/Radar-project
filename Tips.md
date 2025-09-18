@@ -10,7 +10,8 @@ SDK Setting:
 RCS
 
 
-<img width="423" height="112" alt="image" src="https://github.com/user-attachments/assets/a268607c-1c1e-4979-a93b-bcd3623721b7" />
+<img width="754" height="192" alt="image" src="https://github.com/user-attachments/assets/08a96ea9-e16d-4d75-8add-599e8f77d32a" />
+
 
 Record
 
