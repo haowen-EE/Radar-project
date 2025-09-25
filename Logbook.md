@@ -307,3 +307,18 @@ Set speed threshold: pedestrian ≤ 3.5 m/s; scooters are divided into two gears
 
 
 Encountered implementation obstacles: Some CSVs were not compatible and robust. My countermeasure was to gradually refactor and debug according to the "minimum necessary changes" idea (data import→ clustering→ speed estimation→ trajectory smoothing).
+
+## 2025-09-19
+Stage goal locked: Without affecting pedestrian recognition, use position + size a priori to stabilize the scooter, and complete continuous tracking + speed measurement.
+
+Data priors applied: The radar is ≈ 3 m from the center line, and the installation height ≈is 0.5–0.7 m. Scooter pedals are about 1.17 m × 0.23 m, and the height of the column is ≈ 1.05 m; This sets the OBB/L_min/W_min and fallback AABB area thresholds.
+
+Thresholds set: Pedestrian ≤ 3.5 m/s; scooter average speed ≥ 3.5 m/s, VP90 ≥ 4.0 m/s; Fast gear > 5.5 m/s triggers red warning and "fast scooter" alarm text; Detection is entered into tracking and speed measurement.
+
+Gating & geometry: OBB shape threshold (L_min=1.0 m, W_min=0.20 m, AR≥1.8); Retracement AABB (L≥0.80 m, W≥0.20 m, AR≥1.5, area≥0.10 m²); Relax/ignore the d_near when the point cloud is sparse (n≤4) or v≥3.2 m/s.
+
+Tracking robustness: predict correlation gates; 2.0 s of survival; It has been confirmed that scooters do not drop points; MAX_MISS=30 Anti-temporary deletion; Segmentation of neighbors avoids being "adsorbed" by static small objects.
+
+Issues & fixes: RSC scene points are sparse, slow speed is insufficient → lift/fall back threshold, cold start fast confirmation (≥4.0 m/s), distance adaptive wide gate; Pedestrian false detection → Speed limit 3.5 m/s + area/length hard threshold.
+
+Outcome: The scooter can be instantly recognized and stably tracked when it appears, and the box is updated with movement; Speed labeling is accurate; The fast gear automatically turns red and alarms.
