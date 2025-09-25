@@ -282,11 +282,22 @@ The impact of low frame rate (1–2 fps) on high-speed targets was evaluated, an
 
 The pedestrian recognition process in the current code was sorted out, and speed unit conversion was completed (e.g., 25 km/h ≈ 6.94 m/s) to prepare for the "dangerous driving" threshold.
 
+
+
+
+https://github.com/user-attachments/assets/26fe719b-8037-4737-8a1a-9cda51a65b2f
+
+
 ## 2025-09-14
 Common speed ranges are defined: typical m/s intervals for walking/jogging, used as a basis for labels and rules.
 
 
 I marked the knowledge points in the course materials that were directly related to the project to ensure that I only focused on the useful parts later.
+
+
+
+https://github.com/user-attachments/assets/10d53553-2895-490d-9264-e564d2ccae3c
+
 
 # 2025-09-15
 The stage goal was determined: without affecting pedestrian recognition, the size and position priori were used to stably identify the scooter, and the tracking + speed measurement was completed.
