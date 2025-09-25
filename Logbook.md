@@ -269,3 +269,15 @@ Optional Logic Tests (Protocol B)
 Remove the "upper speed limit" in the confirmation condition, and keep only v ≥ 0.3 m/s and the minimum duration and height threshold.
 
 Result: Both walk/run can be confirmed, which is convenient for subsequent labeling according to speed (walk/jog/run).
+
+## 2025-09-13
+The size and structure of the electric scooter (in cm) are organized into a clear prior description to facilitate the use of subsequent algorithms.
+
+
+The system reviewed the Range-Doppler (RD) heat map: the generation process from FMCW to two FFTs, common parameters (window, frame length, PRF), and how to use RD to locate high-speed scooters.
+
+
+The impact of low frame rate (1–2 fps) on high-speed targets was evaluated, and the conclusion was that they were easily missed, which required increasing the frame rate or using trajectory stitching to compensate.
+
+
+The pedestrian recognition process in the current code was sorted out, and speed unit conversion was completed (e.g., 25 km/h ≈ 6.94 m/s) to prepare for the "dangerous driving" threshold.
