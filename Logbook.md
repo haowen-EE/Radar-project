@@ -322,3 +322,35 @@ Tracking robustness: predict correlation gates; 2.0 s of survival; It has been c
 Issues & fixes: RSC scene points are sparse, slow speed is insufficient → lift/fall back threshold, cold start fast confirmation (≥4.0 m/s), distance adaptive wide gate; Pedestrian false detection → Speed limit 3.5 m/s + area/length hard threshold.
 
 Outcome: The scooter can be instantly recognized and stably tracked when it appears, and the box is updated with movement; Speed labeling is accurate; The fast gear automatically turns red and alarms.
+
+## 2025-09-23
+
+**Job Description**:
+- Reproduce the issue online: In `csv_boxs_withthings_V3.py`, we found that pedestrian data (man_walk2/3.csv) was frequently misclassified as ScooterRider. Preliminary testing showed the misclassification rate was close to 30-40%.
+  
+- Data analysis preparation:
+- Collect four key CSV data sets:
+- `escooter1.csv` / `escooter2.csv` (real data of electric scooters)
+- `man_walk2.csv` / `man_walk3.csv` (pedestrian walking data)
+- Confirm the integrity of the data format and verify the availability of fields such as timestamp, detIdx, x/y/z/v
+
+- Root cause location:
+- Check `is_scooter_rider()` function in existing decision logic
+- It was found that there were serious deviations in the old version parameter configuration:
+- `SR_HEIGHT_MIN=1.35 m` is too high, causing the bbox height of all scooter clusters (actually 0.1~0.6 m) to be excluded
+- `SR_CENTROID_Y_MIN=1.45 m` does not match the measured centroid height (about 2.3 m)
+- Missing constraint on top height (ymax)
+
+**Technical Decisions**:
+- Launch a data-driven re-parameterization program
+- Statistical analysis of four sets of data is required to extract geometric feature distribution
+- Plan to introduce multi-dimensional geometric constraints (width/depth/height/center of mass/top height/bottom area, etc.)
+
+**Problems**:
+- The existing code has inconsistent logic for bbox calculation and centroid extraction, which needs to be standardized
+- The trajectory management module lacks geometric consistency memory (geom_hits mechanism)
+
+**Next Steps**:
+- Write data statistics scripts to output the percentile distribution of each field
+- Design a new geometric judgment rule framework
+
