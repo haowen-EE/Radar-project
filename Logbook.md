@@ -398,4 +398,61 @@ SR_HEIGHT_MIN/MAX = 0.10~0.80 m # Core correction
 SR_CENTROID_Y_MIN/MAX = 1.30~3.30 m
 SR_TOP_Y_MIN = 1.80 m # New
 SR_POINTS_MIN/MAX = 8~220
+```
+
+## 2025-10-01
+
+**Job Description**:
+- Refactor `_cluster_geometry()` function:
+- Unified geometric feature extraction interface
+- Returns normalized dictionary: width_x/depth_z/height_y/centroid_y/top_y/horiz_mean/base_area etc.
+- Supports strict and loose mode tolerance calculation
+
+- Update `is_scooter_rider()` judgment function:
+- Implement strict mode (strict=True, tolerance factor 1.0) for real-time updates
+- Implemented a loose mode (strict=False, tolerance factor 1.2~1.4) for trajectory conversion
+- Optimize the judgment order: number of points → size → centroid → top height → bottom area → aspect ratio
+- New geometric constraints:
+```Python
+# Aspect ratio constraint (avoiding elongated noise)
+width_depth_ratio >= 1.05
+# Bottom area constraint (avoid small clusters)
+base_area = width_x * depth_z >= 0.18 m²
+# Top height hard constraint
+top_y >= 1.80 m
+```
+
+- Track class `SimpleTrack` transformation:
+- Added `geom_hits` counter to accumulate the number of geometry hits
+- Added `converted` flag to ensure the same track is only converted once
+- Added `updated` flag to control the decay timing of geom_hits
+- Decay strategy: -1 for each frame of unmatched tracks, minimum value is zero
+
+- Rewrite the conversion decision logic:
+# Core Logic
+geom_ok = (track.geom_hits >= 1 and
+is_scooter_rider(cluster, loose=True))
+```Python
+speed_ok = speed >= 1.70 m/s # Main channel
+slow_speed_ok = (speed >= 1.30 m/s and # Alternate channel
+track.geom_hits >= 3 and
+height >= 1.8 m)
+if geom_ok and (speed_ok or slow_speed_ok):
+convert_to_ScooterRider()
+**Debugging process**:
+
+- Integrate new logic in `csv_boxs_withthings_V3.py`
+- Manually test the first 100 frames of escooter1.csv and observe:
+```
+- geom_hits accumulation process (rapid increase at the beginning, then maintain at 5~10 after stabilization)
+- Conversion trigger timing (usually triggered within 2-5 frames after the trajectory is established)
+- Pedestrian data is correctly triggered (geom_hits is always = 0 or low value)
+
+- The initial version decayed too quickly, causing geom_hits to frequently return to zero → Adjust the decay trigger condition (decay only when there is no match)
+- The tolerance in loose mode is too large, and some pedestrians pass through in large groups → Tighten the width-to-depth ratio and bottom area thresholds
+---
+
+**Problems**:
+- The initial version decayed too quickly, causing geom_hits to frequently return to zero → Adjust the decay trigger condition (decay only when there is no match)
+- The tolerance in loose mode is too large, and some pedestrians pass through in large groups → Tighten the width-to-depth ratio and bottom area thresholds
 
