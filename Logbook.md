@@ -325,7 +325,7 @@ Outcome: The scooter can be instantly recognized and stably tracked when it appe
 
 ## 2025-09-23
 
-**Job Description**:
+**Work Description**:
 - Reproduce the issue online: In `csv_boxs_withthings_V3.py`, we found that pedestrian data (man_walk2/3.csv) was frequently misclassified as ScooterRider. Preliminary testing showed the misclassification rate was close to 30-40%.
   
 - Data analysis preparation:
@@ -356,7 +356,7 @@ Outcome: The scooter can be instantly recognized and stably tracked when it appe
 
 ## 2025-09-27
 
-**Job Description**:
+**Work Description**:
 - Write the data analysis script `analyze_escooter_data.py`:
 ```Python
 # Key statistical indicators
@@ -402,7 +402,7 @@ SR_POINTS_MIN/MAX = 8~220
 
 ## 2025-10-01
 
-**Job Description**:
+**Work Description**:
 - Refactor `_cluster_geometry()` function:
 - Unified geometric feature extraction interface
 - Returns normalized dictionary: width_x/depth_z/height_y/centroid_y/top_y/horiz_mean/base_area etc.
@@ -458,7 +458,7 @@ convert_to_ScooterRider()
 
 ## 2025-10-03
 
-**Job Description**:
+**Work Description**:
 - Create regression test script `test_pedestrian_fix.py`:
 - Hard-coded four test data paths
 - Implement a complete clustering → trajectory → judgment process
