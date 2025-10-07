@@ -456,3 +456,37 @@ convert_to_ScooterRider()
 - The initial version decayed too quickly, causing geom_hits to frequently return to zero → Adjust the decay trigger condition (decay only when there is no match)
 - The tolerance in loose mode is too large, and some pedestrians pass through in large groups → Tighten the width-to-depth ratio and bottom area thresholds
 
+## 2025-10-03
+
+**Job Description**:
+- Create regression test script `test_pedestrian_fix.py`:
+- Hard-coded four test data paths
+- Implement a complete clustering → trajectory → judgment process
+- Simulate the core logic of csv_boxs_withthings_V3.py, but remove the visualization part
+
+- Test framework design:
+def test_file(csv_path, expected_type):
+```Python
+# Load data → Group by frame (detIdx==0)
+# Each frame executes: DBSCAN clustering → trajectory association → geometry determination → speed check → conversion decision
+# Count Track→ScooterRider conversions
+# Output judgment results and detailed logs
+- Log classification mechanism:
+
+```
+- `[CONVERT]`: Successful conversion, print speed/points/height/geom_hits
+- `[WAIT]`: Geometry is satisfied but speed is insufficient, print current speed and required threshold
+- `[GEOM]`: The speed is satisfied but the geometry is insufficient, print the specific items that failed
+
+- **First round test results** (2025-10-04 afternoon):
+| Dataset | Expected | Actual Conversions | Status |
+|--------|------|--------------|------|
+| escooter1.csv | ScooterRider | 10 times |  PASS |
+| escooter2.csv | ScooterRider | 8 times |  PASS |
+| man_walk2.csv | Track | 0 times |  PASS |
+| man_walk3.csv | Track | 0 times |  PASS |
+
+- Boundary case verification:
+- Test the first 50 frames (quick regression) and all frames (complete verification)
+- Check for duplicate conversions (make sure the converted flag is enabled)
+- Verify speed outlier processing (points > 20 m/s are filtered)
