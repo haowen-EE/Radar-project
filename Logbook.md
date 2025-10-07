@@ -354,3 +354,48 @@ Outcome: The scooter can be instantly recognized and stably tracked when it appe
 - Write data statistics scripts to output the percentile distribution of each field
 - Design a new geometric judgment rule framework
 
+## 2025-09-27
+
+**Job Description**:
+- Write the data analysis script `analyze_escooter_data.py`:
+```Python
+# Key statistical indicators
+- bbox size (width_x, depth_z, height_y)
+- Centroid height (centroid_y = (ymin+ymax)/2)
+- Top height (top_y = ymax)
+- Points (points_count)
+- Velocity
+```
+
+- **Scooter data analysis results** (escooter1 + escooter2):
+- bbox height: median 0.30 m, P90=0.50 m, P95=0.60 m
+- Center of mass height: median 2.30 m, range 1.8~2.8 m
+- Top height: P10=1.85 m, P50=2.10 m, P90=2.45 m
+- Width (x): median 0.65 m, range 0.4~1.2 m
+- Depth (z): median 0.50 m, range 0.2~0.9 m
+- Points: Median 15, P90=45
+- Speed: Median 1.8 m/s, P75=2.6 m/s, P90=3.5 m/s
+
+- **Pedestrian data analysis results** (man_walk2 + man_walk3):
+- Bbox height: very low (about 0.3 m) or very high (>1.5 m), not concentrated
+- Centroid height: range 0.5~3.5 m, with large dispersion
+- Top height: Most are <1.5 m or >2.8 m, clearly distinguishable from scooters
+- Width/depth: typically <0.4 m (small clusters) or >1.5 m (wide range of discrete points)
+- Speed: Median 1.2 m/s, P90=2.0 m/s
+
+Key Findings:
+1. **Serious mismatch of height parameters**: The old rule of 1.35~3.40 m is completely inapplicable and should be changed to 0.10~0.80 m
+2. **Center of mass height is an effective distinguishing feature**: Scooters are concentrated between 1.8 and 2.8 meters, while pedestrians are more dispersed
+3. **New top height constraint**: Scooter ymax is usually ≥ 1.80 m, which can be used as a strong feature
+4. **Overlapping speed distribution**: Pedestrians and slow scooters have overlapping speed ranges (1.0-2.5 m/s), so speed alone cannot be relied upon.
+
+**Technical solution**:
+- Design new parameter sets:
+```Python
+SR_WIDTH_MIN/MAX = 0.35~1.60 m
+SR_DEPTH_MIN/MAX = 0.15~1.10 m
+SR_HEIGHT_MIN/MAX = 0.10~0.80 m # Core correction
+SR_CENTROID_Y_MIN/MAX = 1.30~3.30 m
+SR_TOP_Y_MIN = 1.80 m # New
+SR_POINTS_MIN/MAX = 8~220
+
